@@ -1,92 +1,91 @@
-name: Build LMI Kernel SukiSU
+name: Build lmi MIUI 4.19 SukiSU (NoSpoof)
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - android14-stable-mod
+    branches: [ android14-stable-mod ]
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
     steps:
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
-          repository: liyafe1997/kernel_xiaomi_sm8250_mod
           ref: android14-stable-mod
-          path: kernel
 
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libncurses5-dev wget curl git zip gcc-aarch64-linux-gnu
+          sudo apt-get install -y bc bison build-essential ccache curl flex \
+            git gnupg gperf imagemagick libncurses5 libncurses5-dev \
+            libssl-dev libxml2-utils lzop pngcrush rsync schedtool \
+            squashfs-tools xsltproc zip zlib1g-dev libelf-dev \
+            gcc-aarch64-linux-gnu
 
-      - name: Setup SukiSU
-        working-directory: kernel
+      - name: Setup SukiSU (SUSFS builtin-new)
         run: |
+          git config --global http.postBuffer 524288000
+          git config --global http.version HTTP/1.1
           rm -rf KernelSU
-          git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU
+          for i in 1 2 3; do
+            echo "=== 克隆 SukiSU-Ultra 第 $i 次 ==="
+            git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU && break
+            sleep 10
+          done
+          [ -d KernelSU ] || { echo "❌ 克隆失败"; exit 1; }
           ln -sfn "$PWD/KernelSU/kernel" drivers/kernelsu
           grep -q 'obj-\$(CONFIG_KSU)' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          echo "✅ SukiSU 手动集成完成"
+          ls drivers/kernelsu/
 
       - name: Setup Proton Clang
-        working-directory: kernel
         run: |
           wget -q https://github.com/kdrag0n/proton-clang/archive/refs/tags/20210522.tar.gz
           tar -xf 20210522.tar.gz
 
       - name: Build kernel
-        working-directory: kernel
         run: |
-          CLANG_PATH="$PWD/proton-clang-20210522/bin"
-
+          export PATH="$PWD/proton-clang-20210522/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CC=clang
+          export DTC_FLAGS="-f"   # ← 新增：忽略 duplicate_label
 
-          # TARGET 用 clang，HOST 强制用系统 gcc / ld
-          export CC="clang"
-          export CLANG_TRIPLE="aarch64-linux-gnu-"
+          echo "=== lmi defconfigs ==="
+          ls arch/arm64/configs/ | grep -i lmi
+          cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
 
-          # 关键：host 工具不被 clang 污染
-          export HOSTCC="gcc"
-          export HOSTCXX="g++"
-          export HOSTLD="ld"
-
-          export DTC_FLAGS="-f"
-
-          # PATH 只在 make 命令前临时生效，且 host 已锁定 gcc/ld
-          PATH="$CLANG_PATH:$PATH" make lmi_stock_defconfig \
-            HOSTCC=gcc HOSTLD=ld CC=clang CLANG_TRIPLE=aarch64-linux-gnu-
-
+          make lmi_stock_defconfig
           scripts/config --enable CONFIG_KSU
           scripts/config --enable CONFIG_KSU_SUSFS
           scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
 
-          PATH="$CLANG_PATH:$PATH" make -j$(nproc) Image.gz \
-            HOSTCC=gcc HOSTLD=ld \
-            CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
-            KCFLAGS="-Wno-error=implicit-function-declaration"
-
-          mkdir -p out/dtb
-          for dts in $(find arch/arm64/boot/dts/vendor/qcom -maxdepth 1 -name "kona*.dts"); do
-            dtb="${dts%.dts}.dtb"
-            PATH="$CLANG_PATH:$PATH" make "$dtb" \
-              HOSTCC=gcc HOSTLD=ld \
-              CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
-              DTC_FLAGS="-f" || true
-            if [ -f "$dtb" ]; then
-              cp "$dtb" out/dtb/
-            fi
-          done
+          make -j$(nproc) Image.gz dtbs
 
       - name: Package AnyKernel3
-        working-directory: kernel
         run: |
           rm -rf AnyKernel3
           git clone https://github.com/liyafe1997/AnyKernel3 --branch kona --single-branch
           cp arch/arm64/boot/Image.gz AnyKernel3/
-          cp out/dtb/*.dtb AnyKernel3
+          if [ -d arch/arm64/boot/dts/vendor/qcom ]; then
+            cp arch/arm64/boot/dts/vendor/qcom/*.dtb AnyKernel3/ 2>/dev/null || true
+          fi
+          if [ -d arch/arm64/boot/dts/qcom ]; then
+            cp arch/arm64/boot/dts/qcom/*.dtb AnyKernel3/ 2>/dev/null || true
+          fi
+          cd AnyKernel3
+          zip -r "../Kernel_lmi_SukiSU_4.19_MIUI_nospoof_$(date +%Y%m%d_%H%M).zip" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel_lmi_SukiSU_4.19_MIUI_nospoof
+          path: "*.zip"
+          if-no-files-found: error
