@@ -62,6 +62,15 @@ jobs:
           ls arch/arm64/configs/ | grep -i lmi
           cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
 
+      - name: Locate top_app functions
+        run: |
+          echo "=== is_critical_task ==="
+          grep -rn "is_critical_task" --include="*.c" --include="*.h" . | head -20
+          echo "=== set_inherit_top_app ==="
+          grep -rn "set_inherit_top_app" --include="*.c" --include="*.h" . | head -20
+          echo "=== restore_inherit_top_app ==="
+          grep -rn "restore_inherit_top_app" --include="*.c" --include="*.h" . | head -20
+
           make lmi_stock_defconfig
           scripts/config --enable CONFIG_KSU
           scripts/config --enable CONFIG_KSU_SUSFS
