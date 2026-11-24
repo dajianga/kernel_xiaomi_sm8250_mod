@@ -1,57 +1,39 @@
 name: Build lmi MIUI 4.19 SukiSU (NoSpoof)
 
 on:
-  workflow_dispatch:
   push:
     branches: [ android14-stable-mod ]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
-
     steps:
-      - name: Checkout kernel source
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: android14-stable-mod
 
-      - name: Install build dependencies
+      - name: Install deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex \
-            git gnupg gperf imagemagick libncurses5 libncurses5-dev \
-            libssl-dev libxml2-utils lzop pngcrush rsync schedtool \
-            squashfs-tools xsltproc zip zlib1g-dev libelf-dev \
-            gcc-aarch64-linux-gnu
-
-      - name: Setup SukiSU (SUSFS builtin-new)
-        run: |
-          git config --global http.postBuffer 524288000
-          git config --global http.version HTTP/1.1
-          rm -rf KernelSU
-          for i in 1 2 3; do
-            echo "=== 克隆 SukiSU-Ultra 第 $i 次 ==="
-            git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU && break
-            sleep 10
-          done
-          [ -d KernelSU ] || { echo "❌ 克隆失败"; exit 1; }
-          ln -sfn "$PWD/KernelSU/kernel" drivers/kernelsu
-          grep -q 'obj-\$(CONFIG_KSU)' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
-          grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-          echo "✅ SukiSU 手动集成完成"
-          ls drivers/kernelsu/
+          sudo apt update
+          sudo apt install -y bc bison flex libssl-dev libncurses-dev zip curl git wget cpio python3
 
       - name: Setup Proton Clang
         run: |
-          wget -q https://github.com/kdrag0n/proton-clang/archive/refs/tags/20210522.tar.gz
-          tar -xf 20210522.tar.gz
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git -b 20210522 proton-clang-20210522
 
-      - name: Locate top_app functions
+      - name: Setup SukiSU
         run: |
-          grep -rn "is_critical_task" --include="*.c" --include="*.h" .
-          grep -rn "set_inherit_top_app" --include="*.c" --include="*.h" .
-          grep -rn "restore_inherit_top_app" --include="*.c" --include="*.h" .
+          rm -rf KernelSU
+          git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU
+          ln -sfn KernelSU drivers/kernelsu
+          grep -q "kernelsu" drivers/Makefile || echo "obj-y += kernelsu/" >> drivers/Makefile
+          grep -q "kernelsu" drivers/Kconfig || echo "source \"drivers/kernelsu/Kconfig\"" >> drivers/Kconfig
+
+      - name: Setup AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
+          cd AnyKernel3
+          rm -rf .git
 
       - name: Build kernel
         run: |
@@ -64,41 +46,28 @@ jobs:
           export CC=clang
           export DTC_FLAGS="-f"
 
-          echo "=== lmi defconfigs ==="
-          ls arch/arm64/configs/ | grep -i lmi
           cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
-
           make lmi_stock_defconfig
+
           scripts/config --enable CONFIG_KSU
           scripts/config --enable CONFIG_KSU_SUSFS
           scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
+          scripts/config --enable CONFIG_SCHED_TOP_APP   # ← 本轮关键
 
-          # 只编译内核镜像 + kona/lmi 相关 dtb（跳过 rb5 等无关设备树）
           make -j$(nproc) Image.gz
-          # 自动找 kona 相关 dts 并编译，找不到就兜底
-          KONA_DTBS=$(find arch/arm64/boot/dts/vendor/qcom -name "kona*.dts" -o -name "lmi*.dts" | sed 's/\.dts$/.dtb/' | sed 's|^arch/arm64/boot/dts/vendor/qcom/||')
-          for dtb in $KONA_DTBS; do
-            make -j$(nproc) arch/arm64/boot/dts/vendor/qcom/$dtb || true
-          done
-          echo "✅ DTB build done (kona/lmi only)"
+          make -j$(nproc) arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb || true
 
       - name: Package AnyKernel3
         run: |
-          rm -rf AnyKernel3
-          git clone https://github.com/liyafe1997/AnyKernel3 --branch kona --single-branch
-          cp arch/arm64/boot/Image.gz AnyKernel3/
-          if [ -d arch/arm64/boot/dts/vendor/qcom ]; then
-            cp arch/arm64/boot/dts/vendor/qcom/*.dtb AnyKernel3/ 2>/dev/null || true
-          fi
-          if [ -d arch/arm64/boot/dts/qcom ]; then
-            cp arch/arm64/boot/dts/qcom/*.dtb AnyKernel3/ 2>/dev/null || true
-          fi
           cd AnyKernel3
-          zip -r "../Kernel_lmi_SukiSU_4.19_MIUI_nospoof_$(date +%Y%m%d_%H%M).zip" .
+          cp ../arch/arm64/boot/Image.gz .
+          cp ../arch/arm64/boot/dts/vendor/qcom/*.dtb . 2>/dev/null || true
+          zip -r9 ../Kernel_lmi_SukiSU_4.19_MIUI_nospoof_$(date +%Y%m%d).zip * -x .git README.md *placeholder
+          cd ..
+          mv Kernel_lmi_SukiSU_4.19_MIUI_nospoof_*.zip AnyKernel3/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel_lmi_SukiSU_4.19_MIUI_nospoof
-          path: "*.zip"
-          if-no-files-found: error
+          path: AnyKernel3/*.zip
