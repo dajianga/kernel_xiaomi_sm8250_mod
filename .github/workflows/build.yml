@@ -2,33 +2,50 @@ name: Build lmi MIUI 4.19 SukiSU (NoSpoof)
 
 on:
   workflow_dispatch:
-
-permissions:
-  contents: read
+  push:
+    branches: [ android14-stable-mod ]
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 120
 
     steps:
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
           ref: android14-stable-mod
-          submodules: recursive
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            bc bison flex libssl-dev libncurses5-dev \
-            libc6-dev libncursesw5-dev xz-utils \
-            cpio rsync zip unzip wget git python3 \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+          sudo apt-get install -y bc bison build-essential ccache curl flex \
+            g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick \
+            lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool \
+            libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 \
+            libxml2-utils lzop pngcrush rsync schedtool squashfs-tools \
+            xsltproc yasm zip zlib1g-dev
 
-      - name: Setup SukiSU builtin-new
+      - name: Setup SukiSU builtin-new (GitHub 官方源)
         run: |
-          curl -LSs "https://git.zako.shirkneko.top:20004/shirkneko/SukiSU/raw/branch/main/kernel/setup.sh" | bash -s builtin-new
+          git config --global http.postBuffer 524288000
+          git config --global http.version HTTP/1.1
+          git config --global http.lowSpeedLimit 0
+          git config --global http.lowSpeedTime 999999
+
+          for i in 1 2 3 4 5; do
+            echo "=== SukiSU 尝试第 $i 次 ==="
+            curl -LSs --retry 3 --connect-timeout 30 \
+              "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
+              -o /tmp/setup.sh && \
+            bash /tmp/setup.sh -s builtin-new && break
+            echo "第 $i 次失败，10 秒后重试..."
+            sleep 10
+          done
+
+          [ -d KernelSU ] || { echo "❌ KernelSU 未生成，克隆失败"; exit 1; }
+          echo "✅ SukiSU 就绪"
+          ls KernelSU/
 
       - name: Setup Proton Clang
         run: |
@@ -46,17 +63,15 @@ jobs:
           unset LLVM || true
           unset LLVM_IAS || true
 
-          # 确认 defconfig 文件
           echo "=== lmi defconfigs ==="
           ls arch/arm64/configs/ | grep -i lmi
 
-          # 仓库里是 lmi_stock-defconfig（连字符），make 需要下划线目标
-          # 复制一份为标准 _defconfig 名
+          # 仓库文件是 lmi_stock-defconfig（连字符），make 需要下划线目标
           cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
 
           make lmi_stock_defconfig
 
-          # 关掉 uname 伪装（核心目的：显示真实 4.19.157）
+          # 【核心】关闭 uname 伪装，uname -r 显示真实 4.19.157（NoSpoof）
           scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
 
           make -j$(nproc) Image.gz dtbs
@@ -68,7 +83,7 @@ jobs:
 
           cp arch/arm64/boot/Image.gz AnyKernel3/
 
-          # sm8250/kona dtb 常见路径（两个都试）
+          # sm8250/kona dtb 双路径兜底
           if [ -d arch/arm64/boot/dts/vendor/qcom ]; then
             cp arch/arm64/boot/dts/vendor/qcom/*.dtb AnyKernel3/ 2>/dev/null || true
           fi
