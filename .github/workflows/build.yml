@@ -1,54 +1,42 @@
-name: Build Kernel
+name: Build LMI Kernel SukiSU
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source
+      - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          repository: liyafe1997/kernel_xiaomi_sm8250_mod
+          ref: android14-stable-mod
+          path: kernel
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            bc \
-            bison \
-            flex \
-            libssl-dev \
-            libncurses5-dev \
-            wget \
-            curl \
-            git \
-            zip \
-            gcc-aarch64-linux-gnu
+          sudo apt-get install -y bc bison flex libssl-dev libncurses5-dev wget curl git zip gcc-aarch64-linux-gnu
 
       - name: Setup SukiSU
+        working-directory: kernel
         run: |
           rm -rf KernelSU
-          for i in 1 2 3; do
-            echo "=== 克隆 SukiSU-Ultra 第 $i 次 ==="
-            git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU && break
-            sleep 10
-          done
-          [ -d KernelSU ] || { echo "❌ 克隆失败"; exit 1; }
+          git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU
           ln -sfn "$PWD/KernelSU/kernel" drivers/kernelsu
           grep -q 'obj-\$(CONFIG_KSU)' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-          echo "✅ SukiSU 手动集成完成"
-          ls drivers/kernelsu/
 
       - name: Setup Proton Clang
+        working-directory: kernel
         run: |
           wget -q https://github.com/kdrag0n/proton-clang/archive/refs/tags/20210522.tar.gz
           tar -xf 20210522.tar.gz
 
       - name: Build kernel
+        working-directory: kernel
         run: |
           export PATH="$PWD/proton-clang-20210522/bin:$PATH"
           export ARCH=arm64
@@ -59,24 +47,33 @@ jobs:
           export CC=clang
           export DTC_FLAGS="-f"
 
-          echo "=== lmi defconfigs ==="
-          ls arch/arm64/configs/ | grep -i lmi
           cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
-
           make lmi_stock_defconfig
+
           scripts/config --enable CONFIG_KSU
           scripts/config --enable CONFIG_KSU_SUSFS
           scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
 
-          make -j$(nproc) Image.gz dtbs KCFLAGS="-Wno-error=implicit-function-declaration"
+          make -j$(nproc) Image.gz KCFLAGS="-Wno-error=implicit-function-declaration"
+
+          mkdir -p out/dtb
+          for dts in $(find arch/arm64/boot/dts/vendor/qcom -maxdepth 1 -name "kona*.dts"); do
+            dtb="${dts%.dts}.dtb"
+            make "$dtb" DTC_FLAGS="-f" || true
+            if [ -f "$dtb" ]; then
+              cp "$dtb" out/dtb/
+            fi
+          done
 
       - name: Package AnyKernel3
+        working-directory: kernel
         run: |
           rm -rf AnyKernel3
           git clone https://github.com/liyafe1997/AnyKernel3 --branch kona --single-branch
+
           cp arch/arm64/boot/Image.gz AnyKernel3/
-          cp arch/arm64/boot/dts/vendor/qcom/*.dtb AnyKernel3/ 2>/dev/null || true
-          cp arch/arm64/boot/dts/qcom/*.dtb AnyKernel3/ 2>/dev/null || true
+          cp out/dtb/*.dtb AnyKernel3/ 2>/dev/null || true
+
           cd AnyKernel3
           zip -r "../Kernel_lmi_SukiSU_4.19_MIUI_nospoof_$(date +%Y%m%d_%H%M).zip" .
 
@@ -84,5 +81,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Kernel_lmi_SukiSU_4.19_MIUI_nospoof
-          path: "*.zip"
+          path: kernel/*.zip
           if-no-files-found: error
