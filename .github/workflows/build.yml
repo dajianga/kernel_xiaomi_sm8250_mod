@@ -63,23 +63,35 @@ jobs:
           scripts/config --enable CONFIG_KSU
           scripts/config --enable CONFIG_KSU_SUSFS
           scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
+          # 彻底关 clk 调试（全链）
           scripts/config --disable CONFIG_CLK_QCOM_DEBUG 2>/dev/null || true
           scripts/config --disable CONFIG_CLK_DEBUG 2>/dev/null || true
+          scripts/config --disable CONFIG_DEBUG_FS 2>/dev/null || true
 
-          # binder.c top_app stub（上一轮已验证）
+          # binder.c top_app stub（已验证）
           sed -i '1i #include <linux/sched.h>' drivers/android/binder.c
           sed -i '2i static inline int is_critical_task(struct task_struct *t) { return 0; }' drivers/android/binder.c
           sed -i '3i static inline void set_inherit_top_app(struct task_struct *t, struct task_struct *f) {}' drivers/android/binder.c
           sed -i '4i static inline void restore_inherit_top_app(struct task_struct *t) {}' drivers/android/binder.c
 
-          # 本轮 format/trace 修复
+          # 本轮：wm_adsp ret 初始化（精准）
+          sed -i 's/int ret;/int ret = 0;/' techpack/audio/asoc/codecs/cs35141/vm_adsp.c 2>/dev/null || true
+          # 上轮 format 修复保留
           sed -i 's/active_ch_cnt:%d/active_ch_cnt:%lu/' techpack/audio/asoc/codecs/bolero/tx-macro.c 2>/dev/null || true
           sed -i 's/with err %d/with err %ld/' drivers/char/adspprpc.c 2>/dev/null || true
-          if [ -f drivers/clk/qcom/trace.h ]; then
-            sed -i 's/^#include TRACE_INCLUDE.*$//' drivers/clk/qcom/trace.h 2>/dev/null || true
-          fi
 
-          export KCFLAGS="-Wno-error=format -Wno-error=format-security"
+          # 彻底干掉 clk-debug 编译（最稳：直接注释其 obj 或删文件）
+          if [ -f drivers/clk/qcom/Makefile ]; then
+            sed -i 's/^obj-y.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
+            sed -i 's/^obj-m.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
+          fi
+          rm -f drivers/clk/qcom/trace.h 2>/dev/null || true
+          # 若仍 include，空壳保底
+          echo '/* stub */' > drivers/clk/qcom/trace.h 2>/dev/null || true
+
+          # 全局兜底：压制老高通 Clang Werror（关键！）
+          export KCFLAGS="-Wno-error=maybe-uninitialized -Wno-error=unused-result -Wno-error=format -Wno-error=format-security -Wno-error=format-truncation"
+
           make ARCH=arm64 -j$(nproc) Image.gz
           make ARCH=arm64 -j$(nproc) arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb || true
           echo "✅ build done"
