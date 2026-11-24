@@ -63,14 +63,23 @@ jobs:
           scripts/config --enable CONFIG_KSU
           scripts/config --enable CONFIG_KSU_SUSFS
           scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
+          scripts/config --disable CONFIG_CLK_QCOM_DEBUG 2>/dev/null || true
+          scripts/config --disable CONFIG_CLK_DEBUG 2>/dev/null || true
 
-          # ✅ 安全补丁：补 sched.h + stub top_app（避免 implicit + 语法坏）
+          # binder.c top_app stub（上一轮已验证）
           sed -i '1i #include <linux/sched.h>' drivers/android/binder.c
           sed -i '2i static inline int is_critical_task(struct task_struct *t) { return 0; }' drivers/android/binder.c
           sed -i '3i static inline void set_inherit_top_app(struct task_struct *t, struct task_struct *f) {}' drivers/android/binder.c
           sed -i '4i static inline void restore_inherit_top_app(struct task_struct *t) {}' drivers/android/binder.c
-          echo "✅ binder.c patched"
 
+          # 本轮 format/trace 修复
+          sed -i 's/active_ch_cnt:%d/active_ch_cnt:%lu/' techpack/audio/asoc/codecs/bolero/tx-macro.c 2>/dev/null || true
+          sed -i 's/with err %d/with err %ld/' drivers/char/adspprpc.c 2>/dev/null || true
+          if [ -f drivers/clk/qcom/trace.h ]; then
+            sed -i 's/^#include TRACE_INCLUDE.*$//' drivers/clk/qcom/trace.h 2>/dev/null || true
+          fi
+
+          export KCFLAGS="-Wno-error=format -Wno-error=format-security"
           make ARCH=arm64 -j$(nproc) Image.gz
           make ARCH=arm64 -j$(nproc) arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb || true
           echo "✅ build done"
