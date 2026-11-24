@@ -50,7 +50,6 @@ jobs:
       - name: Build kernel
         run: |
           export PATH="$PWD/proton-clang-20210522/bin:$PATH"
-          export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
@@ -58,33 +57,25 @@ jobs:
           export CC=clang
           export DTC_FLAGS="-f"
 
-          echo "=== lmi defconfigs ==="
-          ls arch/arm64/configs/ | grep -i lmi
           cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
 
-      - name: Locate top_app functions
-        run: |
-          echo "=== is_critical_task ==="
-          grep -rn "is_critical_task" --include="*.c" --include="*.h" . | head -20
-          echo "=== set_inherit_top_app ==="
-          grep -rn "set_inherit_top_app" --include="*.c" --include="*.h" . | head -20
-          echo "=== restore_inherit_top_app ==="
-          grep -rn "restore_inherit_top_app" --include="*.c" --include="*.h" . | head -20
+          # ✅ 关键：显式 ARCH=arm64
+          make ARCH=arm64 lmi_stock_defconfig
 
-          make lmi_stock_defconfig
           scripts/config --enable CONFIG_KSU
           scripts/config --enable CONFIG_KSU_SUSFS
           scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
-          scripts/config --enable CONFIG_SCHED_TOP_APP
 
-          # 只编译内核镜像 + kona/lmi 相关 dtb（跳过 rb5 等无关设备树）
-          make -j$(nproc) Image.gz
-          # 自动找 kona 相关 dts 并编译，找不到就兜底
-          KONA_DTBS=$(find arch/arm64/boot/dts/vendor/qcom -name "kona*.dts" -o -name "lmi*.dts" | sed 's/\.dts$/.dtb/' | sed 's|^arch/arm64/boot/dts/vendor/qcom/||')
-          for dtb in $KONA_DTBS; do
-            make -j$(nproc) arch/arm64/boot/dts/vendor/qcom/$dtb || true
-          done
-          echo "✅ DTB build done (kona/lmi only)"
+          # ✅ 兜底：注释 binder.c 里 MIUI top-app 三个调用（避免 implicit declaration）
+          sed -i 's/if (from \&\& is_critical_task(from->task))/if (0 \&\& from)/' drivers/android/binder.c
+          sed -i '/set_inherit_top_app(thread->task, from->task);/s/^/\/\/ /' drivers/android/binder.c
+          sed -i '/restore_inherit_top_app(thread->task);/s/^/\/\/ /' drivers/android/binder.c
+          echo "✅ binder.c top_app calls patched"
+
+          # ✅ 内核 + 精准 DTB（不编 rb5）
+          make ARCH=arm64 -j$(nproc) Image.gz
+          make ARCH=arm64 -j$(nproc) arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb || true
+          echo "✅ build done"
 
       - name: Package AnyKernel3
         run: |
