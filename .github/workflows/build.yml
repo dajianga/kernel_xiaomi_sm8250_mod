@@ -47,6 +47,12 @@ jobs:
           wget -q https://github.com/kdrag0n/proton-clang/archive/refs/tags/20210522.tar.gz
           tar -xf 20210522.tar.gz
 
+      - name: Locate top_app functions
+        run: |
+          grep -rn "is_critical_task" --include="*.c" --include="*.h" .
+          grep -rn "set_inherit_top_app" --include="*.c" --include="*.h" .
+          grep -rn "restore_inherit_top_app" --include="*.c" --include="*.h" .
+
       - name: Build kernel
         run: |
           export PATH="$PWD/proton-clang-20210522/bin:$PATH"
