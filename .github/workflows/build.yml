@@ -9,6 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
+
     steps:
       - name: Checkout kernel source
         uses: actions/checkout@v4
@@ -18,10 +19,14 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick libncurses5 libncurses5-dev libssl-dev libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev libelf-dev
-          sudo apt-get install -y lib32gcc-s1 lib32ncurses5-dev lib32readline-dev lib32z1-dev
+          sudo apt-get install -y bc bison build-essential ccache curl flex \
+            g++-multilib gcc-multilib git gnupg gperf imagemagick \
+            libncurses5 libncurses5-dev libssl-dev libxml2-utils lzop \
+            pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
+            libelf-dev lib32gcc-s1 lib32ncurses5-dev lib32readline-dev lib32z1-dev \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
-      - name: Setup SukiSU (SUSFS builtin)
+      - name: Setup SukiSU (SUSFS builtin-new)
         run: |
           git config --global http.postBuffer 524288000
           git config --global http.version HTTP/1.1
@@ -50,18 +55,18 @@ jobs:
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          unset LLVM || true
-          unset LLVM_IAS || true
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CC=clang
+          # 4.19 + Proton Clang：用 CC=clang，不 unset LLVM
 
           echo "=== lmi defconfigs ==="
           ls arch/arm64/configs/ | grep -i lmi
           cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
 
           make lmi_stock_defconfig
-
           scripts/config --enable CONFIG_KSU
           scripts/config --enable CONFIG_KSU_SUSFS
-          # NoSpoof: 关闭 uname 伪装
+          # 【核心 NoSpoof】关闭 uname 伪装，显示真实 4.19.157
           scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
 
           make -j$(nproc) Image.gz dtbs
