@@ -68,7 +68,11 @@ jobs:
           # 【核心 NoSpoof】关闭 uname 伪装，显示真实 4.19.157
           scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
 
-          make -j$(nproc) Image.gz dtbs
+          make -j$(nproc) Image.gz
+          # 只编译 lmi/kona 相关 dtb，跳过 rb5 冲突
+          make -j$(nproc) arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb \
+            arch/arm64/boot/dts/vendor/qcom/kona-v2.1.dtb \
+            arch/arm64/boot/dts/vendor/qcom/kona.dtb 2>/dev/null || true
 
       - name: Package AnyKernel3
         run: |
