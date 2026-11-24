@@ -58,21 +58,19 @@ jobs:
           export DTC_FLAGS="-f"
 
           cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
-
-          # ✅ 关键：显式 ARCH=arm64
           make ARCH=arm64 lmi_stock_defconfig
 
           scripts/config --enable CONFIG_KSU
           scripts/config --enable CONFIG_KSU_SUSFS
           scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
 
-          # ✅ 兜底：注释 binder.c 里 MIUI top-app 三个调用（避免 implicit declaration）
-          sed -i 's/if (from \&\& is_critical_task(from->task))/if (0 \&\& from)/' drivers/android/binder.c
-          sed -i '/set_inherit_top_app(thread->task, from->task);/s/^/\/\/ /' drivers/android/binder.c
-          sed -i '/restore_inherit_top_app(thread->task);/s/^/\/\/ /' drivers/android/binder.c
-          echo "✅ binder.c top_app calls patched"
+          # ✅ 安全补丁：补 sched.h + stub top_app（避免 implicit + 语法坏）
+          sed -i '1i #include <linux/sched.h>' drivers/android/binder.c
+          sed -i '2i static inline int is_critical_task(struct task_struct *t) { return 0; }' drivers/android/binder.c
+          sed -i '3i static inline void set_inherit_top_app(struct task_struct *t, struct task_struct *f) {}' drivers/android/binder.c
+          sed -i '4i static inline void restore_inherit_top_app(struct task_struct *t) {}' drivers/android/binder.c
+          echo "✅ binder.c patched"
 
-          # ✅ 内核 + 精准 DTB（不编 rb5）
           make ARCH=arm64 -j$(nproc) Image.gz
           make ARCH=arm64 -j$(nproc) arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb || true
           echo "✅ build done"
