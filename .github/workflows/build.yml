@@ -9,7 +9,6 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
-
     steps:
       - name: Checkout kernel source
         uses: actions/checkout@v4
@@ -19,33 +18,25 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex \
-            g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick \
-            lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool \
-            libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 \
-            libxml2-utils lzop pngcrush rsync schedtool squashfs-tools \
-            xsltproc yasm zip zlib1g-dev
+          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick libncurses5 libncurses5-dev libssl-dev libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev libelf-dev
+          sudo apt-get install -y lib32gcc-s1 lib32ncurses5-dev lib32readline-dev lib32z1-dev
 
-      - name: Setup SukiSU builtin-new (GitHub 官方源)
+      - name: Setup SukiSU (SUSFS builtin)
         run: |
           git config --global http.postBuffer 524288000
           git config --global http.version HTTP/1.1
-          git config --global http.lowSpeedLimit 0
-          git config --global http.lowSpeedTime 999999
-
-          for i in 1 2 3 4 5; do
-            echo "=== SukiSU 尝试第 $i 次 ==="
-            curl -LSs --retry 3 --connect-timeout 30 \
-              "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
-              -o /tmp/setup.sh && \
-            bash /tmp/setup.sh -s builtin-new && break
-            echo "第 $i 次失败，10 秒后重试..."
+          rm -rf KernelSU
+          for i in 1 2 3; do
+            echo "=== 克隆 SukiSU-Ultra 第 $i 次 ==="
+            git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU && break
             sleep 10
           done
-
-          [ -d KernelSU ] || { echo "❌ KernelSU 未生成，克隆失败"; exit 1; }
-          echo "✅ SukiSU 就绪"
-          ls KernelSU/
+          [ -d KernelSU ] || { echo "❌ 克隆失败"; exit 1; }
+          ln -sfn "$PWD/KernelSU/kernel" drivers/kernelsu
+          grep -q 'obj-\$(CONFIG_KSU)' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          echo "✅ SukiSU 手动集成完成"
+          ls drivers/kernelsu/
 
       - name: Setup Proton Clang
         run: |
@@ -59,19 +50,18 @@ jobs:
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          # 4.19 老内核不用 LLVM=1，GCC 交叉编译更稳
           unset LLVM || true
           unset LLVM_IAS || true
 
           echo "=== lmi defconfigs ==="
           ls arch/arm64/configs/ | grep -i lmi
-
-          # 仓库文件是 lmi_stock-defconfig（连字符），make 需要下划线目标
           cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
 
           make lmi_stock_defconfig
 
-          # 【核心】关闭 uname 伪装，uname -r 显示真实 4.19.157（NoSpoof）
+          scripts/config --enable CONFIG_KSU
+          scripts/config --enable CONFIG_KSU_SUSFS
+          # NoSpoof: 关闭 uname 伪装
           scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
 
           make -j$(nproc) Image.gz dtbs
@@ -80,17 +70,13 @@ jobs:
         run: |
           rm -rf AnyKernel3
           git clone https://github.com/liyafe1997/AnyKernel3 --branch kona --single-branch
-
           cp arch/arm64/boot/Image.gz AnyKernel3/
-
-          # sm8250/kona dtb 双路径兜底
           if [ -d arch/arm64/boot/dts/vendor/qcom ]; then
             cp arch/arm64/boot/dts/vendor/qcom/*.dtb AnyKernel3/ 2>/dev/null || true
           fi
           if [ -d arch/arm64/boot/dts/qcom ]; then
             cp arch/arm64/boot/dts/qcom/*.dtb AnyKernel3/ 2>/dev/null || true
           fi
-
           cd AnyKernel3
           zip -r "../Kernel_lmi_SukiSU_4.19_MIUI_nospoof_$(date +%Y%m%d_%H%M).zip" .
 
