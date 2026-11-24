@@ -2,11 +2,13 @@ name: Build LMI Kernel SukiSU
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - android14-stable-mod
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout kernel source
         uses: actions/checkout@v4
@@ -38,28 +40,44 @@ jobs:
       - name: Build kernel
         working-directory: kernel
         run: |
-          export PATH="$PWD/proton-clang-20210522/bin:$PATH"
+          CLANG_PATH="$PWD/proton-clang-20210522/bin"
+
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CC=clang
+
+          # TARGET 用 clang，HOST 强制用系统 gcc / ld
+          export CC="clang"
+          export CLANG_TRIPLE="aarch64-linux-gnu-"
+
+          # 关键：host 工具不被 clang 污染
+          export HOSTCC="gcc"
+          export HOSTCXX="g++"
+          export HOSTLD="ld"
+
           export DTC_FLAGS="-f"
 
-          cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
-          make lmi_stock_defconfig
+          # PATH 只在 make 命令前临时生效，且 host 已锁定 gcc/ld
+          PATH="$CLANG_PATH:$PATH" make lmi_stock_defconfig \
+            HOSTCC=gcc HOSTLD=ld CC=clang CLANG_TRIPLE=aarch64-linux-gnu-
 
           scripts/config --enable CONFIG_KSU
           scripts/config --enable CONFIG_KSU_SUSFS
           scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
 
-          make -j$(nproc) Image.gz KCFLAGS="-Wno-error=implicit-function-declaration"
+          PATH="$CLANG_PATH:$PATH" make -j$(nproc) Image.gz \
+            HOSTCC=gcc HOSTLD=ld \
+            CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+            KCFLAGS="-Wno-error=implicit-function-declaration"
 
           mkdir -p out/dtb
           for dts in $(find arch/arm64/boot/dts/vendor/qcom -maxdepth 1 -name "kona*.dts"); do
             dtb="${dts%.dts}.dtb"
-            make "$dtb" DTC_FLAGS="-f" || true
+            PATH="$CLANG_PATH:$PATH" make "$dtb" \
+              HOSTCC=gcc HOSTLD=ld \
+              CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+              DTC_FLAGS="-f" || true
             if [ -f "$dtb" ]; then
               cp "$dtb" out/dtb/
             fi
@@ -70,16 +88,5 @@ jobs:
         run: |
           rm -rf AnyKernel3
           git clone https://github.com/liyafe1997/AnyKernel3 --branch kona --single-branch
-
           cp arch/arm64/boot/Image.gz AnyKernel3/
-          cp out/dtb/*.dtb AnyKernel3/ 2>/dev/null || true
-
-          cd AnyKernel3
-          zip -r "../Kernel_lmi_SukiSU_4.19_MIUI_nospoof_$(date +%Y%m%d_%H%M).zip" .
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Kernel_lmi_SukiSU_4.19_MIUI_nospoof
-          path: kernel/*.zip
-          if-no-files-found: error
+          cp out/dtb/*.dtb AnyKernel3
