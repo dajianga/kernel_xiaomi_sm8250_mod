@@ -42,6 +42,12 @@ jobs:
           echo "✅ SukiSU 手动集成完成"
           ls drivers/kernelsu/
 
+      - name: Fix binder.c missing functions
+        run: |
+          sed -i '/is_critical_task/d' drivers/android/binder.c
+          sed -i '/set_inherit_top_app/d' drivers/android/binder.c
+          sed -i '/restore_inherit_top_app/d' drivers/android/binder.c
+          echo "✅ removed missing function calls from binder.c"
       - name: Setup Proton Clang
         run: |
           wget -q https://github.com/kdrag0n/proton-clang/archive/refs/tags/20210522.tar.gz
