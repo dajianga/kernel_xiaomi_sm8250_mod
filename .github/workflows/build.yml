@@ -1,44 +1,87 @@
 name: Build lmi MIUI 4.19 SukiSU (NoSpoof)
+
 on:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
         with:
-          ref: 'android14-stable-mod'
+          ref: android14-stable-mod
           submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex libssl-dev libncurses5-dev \
+            libc6-dev libncursesw5-dev xz-utils \
+            cpio rsync zip unzip wget git python3 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
       - name: Setup SukiSU builtin-new
         run: |
           curl -LSs "https://git.zako.shirkneko.top:20004/shirkneko/SukiSU/raw/branch/main/kernel/setup.sh" | bash -s builtin-new
 
-      - name: Setup toolchain (Proton Clang)
+      - name: Setup Proton Clang
         run: |
           wget -q https://github.com/kdrag0n/proton-clang/archive/refs/tags/20210522.tar.gz
           tar -xf 20210522.tar.gz
-          echo "$PWD/proton-clang-20210522/bin" >> $GITHUB_PATH
 
       - name: Build kernel
         run: |
-          export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
-          export CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          make lmi_stock-defconfig
-          # 4.19 ARM64 自动跳过手动 hook（CONFIG_KSU_HACK_ARM64_BRANCH_LINK=y 由 setup 或 defconfig 覆盖）
+          export PATH="$PWD/proton-clang-20210522/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          # 4.19 老内核不用 LLVM=1，GCC 交叉编译更稳
+          unset LLVM || true
+          unset LLVM_IAS || true
+
+          # 确认 defconfig 文件
+          echo "=== lmi defconfigs ==="
+          ls arch/arm64/configs/ | grep -i lmi
+
+          # 仓库里是 lmi_stock-defconfig（连字符），make 需要下划线目标
+          # 复制一份为标准 _defconfig 名
+          cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
+
+          make lmi_stock_defconfig
+
+          # 关掉 uname 伪装（核心目的：显示真实 4.19.157）
+          scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
+
           make -j$(nproc) Image.gz dtbs
 
       - name: Package AnyKernel3
         run: |
+          rm -rf AnyKernel3
           git clone https://github.com/liyafe1997/AnyKernel3 --branch kona --single-branch
-          cp arch/arm64/boot/Image.gz AnyKernel3/
-          cp arch/arm64/boot/dts/qcom/*.dtb AnyKernel3/ 2>/dev/null || true
-          cd AnyKernel3
-          zip -r ../Kernel_lmi_SukiSU_4.19_MIUI_nospoof_$(date +%Y%m%d).zip *
-          cd ..
 
-      - uses: actions/upload-artifact@v4
+          cp arch/arm64/boot/Image.gz AnyKernel3/
+
+          # sm8250/kona dtb 常见路径（两个都试）
+          if [ -d arch/arm64/boot/dts/vendor/qcom ]; then
+            cp arch/arm64/boot/dts/vendor/qcom/*.dtb AnyKernel3/ 2>/dev/null || true
+          fi
+          if [ -d arch/arm64/boot/dts/qcom ]; then
+            cp arch/arm64/boot/dts/qcom/*.dtb AnyKernel3/ 2>/dev/null || true
+          fi
+
+          cd AnyKernel3
+          zip -r "../Kernel_lmi_SukiSU_4.19_MIUI_nospoof_$(date +%Y%m%d_%H%M).zip" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: lmi_4.19_MIUI_SukiSU_nospoof
+          name: Kernel_lmi_SukiSU_4.19_MIUI_nospoof
           path: "*.zip"
+          if-no-files-found: error
