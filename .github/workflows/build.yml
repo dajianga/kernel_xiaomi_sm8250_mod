@@ -60,12 +60,26 @@ jobs:
           scripts/config --disable CONFIG_CLK_QCOM_DEBUG 2>/dev/null || true
           scripts/config --disable CONFIG_CLK_DEBUG 2>/dev/null || true
 
-          # binder stub
-          sed -i '1i #include <linux/sched.h>' drivers/android/binder.c
-          sed -i '2i static inline int is_critical_task(struct task_struct *t) { return 0; }' drivers/android/binder.c
-          sed -i '3i static inline void set_inherit_top_app(struct task_struct *t, struct task_struct *f) {}' drivers/android/binder.c
-          sed -i '4i static inline void restore_inherit_top_app(struct task_struct *t) {}' drivers/android/binder.c
-
+          # ===== binder stub（防重复注入终极版） =====
+          BINDER=techpack/android/binder.c
+          [ -f "$BINDER" ] || BINDER=drivers/android/binder.c
+          if [ -f "$BINDER" ]; then
+            # 1. 清理历史误注入的 stub（匹配函数定义行）
+            sed -i '/^static inline int is_critical_task(struct task_struct \*t) { return 0; }/d' "$BINDER"
+            sed -i '/^static inline void set_inherit_top_app(struct task_struct \*t, struct task_struct \*f) {}/d' "$BINDER"
+            sed -i '/^static inline void restore_inherit_top_app(struct task_struct \*t) {}/d' "$BINDER"
+            # 清理对应的 #include <linux/sched.h>（若仅为我们注入的）
+            sed -i '/^#include <linux\/sched.h>\/\/ binder stub/d' "$BINDER"
+            
+            # 2. 仅当源码中不存在这些函数时，才安全插入（避免重复）
+            if ! grep -q "is_critical_task" "$BINDER"; then
+              sed -i '1i #include <linux/sched.h> // binder stub' "$BINDER"
+              sed -i '1i static inline int is_critical_task(struct task_struct *t) { return 0; }' "$BINDER"
+              sed -i '1i static inline void set_inherit_top_app(struct task_struct *t, struct task_struct *f) {}' "$BINDER"
+              sed -i '1i static inline void restore_inherit_top_app(struct task_struct *t) {}' "$BINDER"
+            fi
+          fi
+          
           # audio
           sed -i 's/active_ch_cnt:%lu/active_ch_cnt:%lx/' techpack/audio/asoc/codecs/bolero/tx-macro.c 2>/dev/null || true
           sed -i 's/active_ch_cnt:%d/active_ch_cnt:%lx/' techpack/audio/asoc/codecs/bolero/tx-macro.c 2>/dev/null || true
