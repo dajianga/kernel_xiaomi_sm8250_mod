@@ -65,6 +65,9 @@ jobs:
           scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
           scripts/config --disable CONFIG_CLK_QCOM_DEBUG 2>/dev/null || true
           scripts/config --disable CONFIG_CLK_DEBUG 2>/dev/null || true
+          scripts/config --disable CONFIG_IPA_V3 2>/dev/null || true
+          scripts/config --disable CONFIG_IPA_DEBUGFS 2>/dev/null || true
+          scripts/config --disable CONFIG_DEBUG_FS 2>/dev/null || true
 
           # binder stub
           sed -i '1i #include <linux/sched.h>' drivers/android/binder.c
@@ -72,19 +75,19 @@ jobs:
           sed -i '3i static inline void set_inherit_top_app(struct task_struct *t, struct task_struct *f) {}' drivers/android/binder.c
           sed -i '4i static inline void restore_inherit_top_app(struct task_struct *t) {}' drivers/android/binder.c
 
-          # audio format / ret / port_idx
+          # audio
           sed -i 's/active_ch_cnt:%lu/active_ch_cnt:%lx/' techpack/audio/asoc/codecs/bolero/tx-macro.c 2>/dev/null || true
           sed -i 's/active_ch_cnt:%d/active_ch_cnt:%lx/' techpack/audio/asoc/codecs/bolero/tx-macro.c 2>/dev/null || true
           sed -i 's/with err %d/with err %ld/' drivers/char/adspprpc.c 2>/dev/null || true
           sed -i 's/int ret;/int ret = 0;/' techpack/audio/asoc/codecs/cs35141/vm_adsp.c 2>/dev/null || true
           sed -i 's/int port_idx;/int port_idx = 0;/' techpack/audio/dsp/q6adm.c 2>/dev/null || true
 
-          # clk-debug 空 + 去 obj
+          # clk
           : > drivers/clk/qcom/clk-debug.c 2>/dev/null || true
           sed -i 's/^obj-y.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
           sed -i 's/^obj-m.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
 
-          # trace / 缺失头 空壳（含 hid / icp）
+          # trace/headers
           echo '/* stub */' > drivers/clk/qcom/trace.h 2>/dev/null || true
           echo '/* stub */' > techpack/display/pll/pll_trace.h 2>/dev/null || true
           echo '/* stub */' > techpack/camera/drivers/cam_utils/cam_trace.h 2>/dev/null || true
@@ -92,19 +95,16 @@ jobs:
           echo '/* stub */' > techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/trace.h 2>/dev/null || true
           printf '#ifndef CAM_REQ_MGR_CORE_STUB_H\n#define CAM_REQ_MGR_CORE_STUB_H\nstruct cam_req_mgr_core_device;\n#endif\n' >> techpack/camera/drivers/cam_req_mgr/cam_req_mgr_core.h 2>/dev/null || true
 
-          # camera ICP 宏补定义
+          # camera fixes
           grep -q 'CAM_CTX_ACQUIRED' techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c || \
           sed -i '1i #define CAM_CTX_ACQUIRED 1' techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c 2>/dev/null || true
-
-          # camera ctx cast
           sed -i 's/cam_context_buf_done_from_hw(ctx,/cam_context_buf_done_from_hw((struct cam_context *)ctx,/' techpack/camera/drivers/cam_cust/cam_custom_context.c 2>/dev/null || true
 
-          # IPA uaccess 老驱动兜底：禁用 debugfs 统计相关 + 全局压制
-          scripts/config --disable CONFIG_IPA_V3 2>/dev/null || true
-          scripts/config --disable CONFIG_IPA_DEBUGFS 2>/dev/null || true
-          scripts/config --disable CONFIG_DEBUG_FS 2>/dev/null || true
+          # 防非法参数
+          sed -i 's/-Wno-error=error//g' .config 2>/dev/null || true
 
-          export KCFLAGS="-Wno-error=maybe-uninitialized -Wno-error=uninitialized -Wno-error=unused-result -Wno-error=format -Wno-error=format-security -Wno-error=format-truncation -Wno-error=implicit-function-declaration -Wno-error=misleading-indentation -Wno-error=incompatible-pointer-types -Wno-error=error -Wno-error=attribute-warning -Wno-error=sizeof-pointer-memaccess"
+          # 干净 KCFLAGS（无 -Wno-error=error）
+          export KCFLAGS="-Wno-error=maybe-uninitialized -Wno-error=uninitialized -Wno-error=unused-result -Wno-error=format -Wno-error=format-security -Wno-error=format-truncation -Wno-error=implicit-function-declaration -Wno-error=misleading-indentation -Wno-error=incompatible-pointer-types -Wno-error=attribute-warning -Wno-error=sizeof-pointer-memaccess"
 
           make ARCH=arm64 -j$(nproc) Image.gz
           make ARCH=arm64 -j$(nproc) arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb || true
