@@ -107,12 +107,12 @@ jobs:
           CORE_H=techpack/camera/drivers/cam_req_mgr/cam_req_mgr_core.h
           if [ ! -f "$CORE_H" ]; then
             cat > "$CORE_H" <<'EOF'
-#ifndef CAM_REQ_MGR_CORE_H
-#define CAM_REQ_MGR_CORE_H
-struct cam_req_mgr_core_device;
-struct cam_req_mgr_core_ctx;
-#endif
-EOF
+          #ifndef CAM_REQ_MGR_CORE_H
+          #define CAM_REQ_MGR_CORE_H
+          struct cam_req_mgr_core_device;
+          struct cam_req_mgr_core_ctx;
+          #endif
+          EOF
           fi
           CAM_TRACE=techpack/camera/drivers/cam_utils/cam_trace.h
           if [ -f "$CAM_TRACE" ]; then
