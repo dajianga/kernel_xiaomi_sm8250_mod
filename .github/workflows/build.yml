@@ -127,6 +127,39 @@ jobs:
           make ARCH=arm64 -j$(nproc) Image.gz
           make ARCH=arm64 -j$(nproc) arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb || true
 
+          # ===== 修复 cam_fd / cam_context trace 链接缺失 =====
+          # 1. 恢复被清空的相机 trace 头（若之前被 rm/覆盖为 stub）
+          #    仅当文件不存在或仅为空 stub 时还原（避免破坏原仓库）
+          for f in techpack/camera/drivers/cam_utils/cam_trace.h \
+                   techpack/camera/drivers/cam_fd/cam_fd_trace.h \
+                   techpack/camera/drivers/cam_core/cam_context_trace.h; do
+            if [ -f "$f" ] && [ "$(wc -c <$f)" -lt 50 ]; then
+              rm -f "$f"
+            fi
+          done
+          # 若仓库本就没有这些头，需保证调用处不依赖 TRACE_EVENT（见第3步）
+
+          # 2. 确保 cam_fd / cam_context 的 CREATE_TRACE_POINTS 实例化文件存在且未被屏蔽
+          #    常见实例化位置（二选一或都存在）：cam_fd/cam_fd.c / cam_core/cam_context.c
+          for inst in techpack/camera/drivers/cam_fd/cam_fd.c \
+                      techpack/camera/drivers/cam_core/cam_context.c; do
+            if [ -f "$inst" ]; then
+              grep -q "CREATE_TRACE_POINTS" "$inst" || \
+                sed -i '1i #define CREATE_TRACE_POINTS' "$inst"
+            fi
+          done
+
+          # 3. 兜底：若仍链接失败（头不存在/TRACE_EVENT无实例化），直接 stub 掉 cam_fd_context.c 的调用
+          FDCTX=techpack/camera/drivers/cam_fd/cam_fd_context.c
+          if [ -f "$FDCTX" ]; then
+            # 把 trace_cam_context_state(...) 调用改为空（保留函数逻辑）
+            sed -i 's/trace_cam_context_state([^;]*);/do {} while (0);/g' "$FDCTX"
+          fi
+
+          # 4. 同步清理历史误注入（防重复宏）
+          CICP=techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c
+          [ -f "$CICP" ] && sed -i '/#define CAM_CTX_ACQUIRED/d;/#define trace_cam_icp_fw_dbg/d' "$CICP"
+
           # 合成 Image.gz-dtb
           if [ -f arch/arm64/boot/Image.gz ] && [ -f arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb ]; then
             cat arch/arm64/boot/Image.gz arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb > arch/arm64/boot/Image.gz-dtb
