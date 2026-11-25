@@ -59,15 +59,11 @@ jobs:
 
           cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
           make ARCH=arm64 lmi_stock_defconfig
-
           scripts/config --enable CONFIG_KSU
           scripts/config --enable CONFIG_KSU_SUSFS
           scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
           scripts/config --disable CONFIG_CLK_QCOM_DEBUG 2>/dev/null || true
           scripts/config --disable CONFIG_CLK_DEBUG 2>/dev/null || true
-          scripts/config --disable CONFIG_IPA_V3 2>/dev/null || true
-          scripts/config --disable CONFIG_IPA_DEBUGFS 2>/dev/null || true
-          scripts/config --disable CONFIG_DEBUG_FS 2>/dev/null || true
 
           # binder stub
           sed -i '1i #include <linux/sched.h>' drivers/android/binder.c
@@ -87,7 +83,7 @@ jobs:
           sed -i 's/^obj-y.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
           sed -i 's/^obj-m.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
 
-          # trace/headers
+          # trace headers
           echo '/* stub */' > drivers/clk/qcom/trace.h 2>/dev/null || true
           echo '/* stub */' > techpack/display/pll/pll_trace.h 2>/dev/null || true
           echo '/* stub */' > techpack/camera/drivers/cam_utils/cam_trace.h 2>/dev/null || true
@@ -95,15 +91,15 @@ jobs:
           echo '/* stub */' > techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/trace.h 2>/dev/null || true
           printf '#ifndef CAM_REQ_MGR_CORE_STUB_H\n#define CAM_REQ_MGR_CORE_STUB_H\nstruct cam_req_mgr_core_device;\n#endif\n' >> techpack/camera/drivers/cam_req_mgr/cam_req_mgr_core.h 2>/dev/null || true
 
-          # camera fixes
-          grep -q 'CAM_CTX_ACQUIRED' techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c || \
+          # camera ICP 强制修复
+          sed -i '/CAM_CTX_ACQUIRED/d' techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c 2>/dev/null || true
           sed -i '1i #define CAM_CTX_ACQUIRED 1' techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c 2>/dev/null || true
+          sed -i '1i #define trace_cam_icp_fw_dbg(a, b) do {} while (0)' techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c 2>/dev/null || true
           sed -i 's/cam_context_buf_done_from_hw(ctx,/cam_context_buf_done_from_hw((struct cam_context *)ctx,/' techpack/camera/drivers/cam_cust/cam_custom_context.c 2>/dev/null || true
 
-          # 防非法参数
+          # 清理非法参数残留
           sed -i 's/-Wno-error=error//g' .config 2>/dev/null || true
 
-          # 干净 KCFLAGS（无 -Wno-error=error）
           export KCFLAGS="-Wno-error=maybe-uninitialized -Wno-error=uninitialized -Wno-error=unused-result -Wno-error=format -Wno-error=format-security -Wno-error=format-truncation -Wno-error=implicit-function-declaration -Wno-error=misleading-indentation -Wno-error=incompatible-pointer-types -Wno-error=attribute-warning -Wno-error=sizeof-pointer-memaccess"
 
           make ARCH=arm64 -j$(nproc) Image.gz
