@@ -49,15 +49,6 @@ jobs:
 
       - name: Build kernel
         run: |
-          export PATH="$PWD/proton-clang-20210522/bin:$PATH"
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export CC=clang
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export DTC_FLAGS="-f"
-          export KCFLAGS="-w"
-
           cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
           make ARCH=arm64 lmi_stock_defconfig
 
@@ -93,25 +84,24 @@ jobs:
           echo '/* stub */' > techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/trace.h 2>/dev/null || true
           printf '#ifndef CAM_REQ_MGR_CORE_STUB_H\n#define CAM_REQ_MGR_CORE_STUB_H\nstruct cam_req_mgr_core_device;\n#endif\n' >> techpack/camera/drivers/cam_req_mgr/cam_req_mgr_core.h 2>/dev/null || true
 
-          # camera ICP（你的 python 原样保留）
-          python3 - <<'PY'
-          import re
-          p='techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c'
-          s=open(p).read()
-          if '#define CAM_CTX_ACQUIRED 1' not in s:
-              s='#define CAM_CTX_ACQUIRED 1\n'+s
-          if '#define trace_cam_icp_fw_dbg(a,b) do {} while(0)' not in s:
-              s='#define trace_cam_icp_fw_dbg(a,b) do {} while(0)\n'+s
-          s=s.replace('CAM_CTX_ACQUIRED)', 'if (CAM_CTX_ACQUIRED)')
-          open(p,'w').write(s)
-          PY
+          # camera ICP 修复（纯净版：仅补宏，不破坏源码 if 结构）
+          CICP=techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c
+          grep -q '#define CAM_CTX_ACQUIRED' $CICP || sed -i '1i #define CAM_CTX_ACQUIRED 1' $CICP
+          grep -q '#define trace_cam_icp_fw_dbg' $CICP || sed -i '1i #define trace_cam_icp_fw_dbg(a, b) do {} while (0)' $CICP
           sed -i 's/cam_context_buf_done_from_hw(ctx,/cam_context_buf_done_from_hw((struct cam_context *)ctx,/' techpack/camera/drivers/cam_cust/cam_custom_context.c 2>/dev/null || true
 
-          # IPA
+          # IPA __bad_copy_to 源码级兜底
           scripts/config --disable CONFIG_IPA_V3 2>/dev/null || true
           scripts/config --disable CONFIG_IPA_DEBUGFS 2>/dev/null || true
           scripts/config --disable CONFIG_DEBUG_FS 2>/dev/null || true
           sed -i 's/__bad_copy_to();/do {} while (0);/' include/linux/thread_info.h 2>/dev/null || true
+
+          # 工具链与警告屏蔽（修复 -mlittle-endian 与 unknown-warning-option）
+          export PATH="$PWD/proton-clang-20210522/bin:$PATH"
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export KCFLAGS="-w"
 
           make ARCH=arm64 -j$(nproc) Image.gz
           make ARCH=arm64 -j$(nproc) arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb || true
