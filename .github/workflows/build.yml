@@ -92,7 +92,6 @@ jobs:
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3
           cp arch/arm64/boot/Image.gz AnyKernel3/ 2>/dev/null || true
           cp arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb AnyKernel3/dtb 2>/dev/null || true
-          # 合成 Image.gz-dtb（AK3 最认这个）
           if [ -f arch/arm64/boot/Image.gz ] && [ -f arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb ]; then
             cat arch/arm64/boot/Image.gz arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb > AnyKernel3/Image.gz-dtb
           fi
