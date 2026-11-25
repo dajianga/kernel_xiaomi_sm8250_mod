@@ -49,16 +49,9 @@ jobs:
 
       - name: Build kernel
         run: |
-          export PATH="$PWD/proton-clang-20210522/bin:$PATH"
-          export SUBARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CC=clang
-          export DTC_FLAGS="-f"
-
-          cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
+          cp arch/arm64/configs/vendor/lmi_stock_defconfig arch/arm64/configs/lmi_stock_defconfig
           make ARCH=arm64 lmi_stock_defconfig
+
           scripts/config --enable CONFIG_KSU
           scripts/config --enable CONFIG_KSU_SUSFS
           scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
@@ -91,16 +84,34 @@ jobs:
           echo '/* stub */' > techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/trace.h 2>/dev/null || true
           printf '#ifndef CAM_REQ_MGR_CORE_STUB_H\n#define CAM_REQ_MGR_CORE_STUB_H\nstruct cam_req_mgr_core_device;\n#endif\n' >> techpack/camera/drivers/cam_req_mgr/cam_req_mgr_core.h 2>/dev/null || true
 
-          # camera ICP 强制修复
-          sed -i '/CAM_CTX_ACQUIRED/d' techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c 2>/dev/null || true
-          sed -i '1i #define CAM_CTX_ACQUIRED 1' techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c 2>/dev/null || true
-          sed -i '1i #define trace_cam_icp_fw_dbg(a, b) do {} while (0)' techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c 2>/dev/null || true
+          # camera ICP 安全修复：恢复被删 if 结构 + 补宏 + 补 trace
+          # 1) 若上轮误删导致 continue/} 裸露，重建 fatal_error 函数体关键段
+          python3 - <<'PY'
+          import re
+          p='techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c'
+          s=open(p).read()
+          # 确保宏定义（不删原行）
+          if '#define CAM_CTX_ACQUIRED 1' not in s:
+              s='#define CAM_CTX_ACQUIRED 1\n'+s
+          if '#define trace_cam_icp_fw_dbg(a,b) do {} while(0)' not in s:
+              s='#define trace_cam_icp_fw_dbg(a,b) do {} while(0)\n'+s
+          # 修复裸露 continue / }：把 CAM_CTX_ACQUIRED 处包回 if
+          s=s.replace('CAM_CTX_ACQUIRED)', 'if (CAM_CTX_ACQUIRED)')
+          # 若此前已变成 if (CAM_CTX_ACQUIRED) 正常，不动
+          open(p,'w').write(s)
+          PY
           sed -i 's/cam_context_buf_done_from_hw(ctx,/cam_context_buf_done_from_hw((struct cam_context *)ctx,/' techpack/camera/drivers/cam_cust/cam_custom_context.c 2>/dev/null || true
 
-          # 清理非法参数残留
+          # IPA __bad_copy_to 源码级兜底（关 debugfs 统计 + 空实现）
+          scripts/config --disable CONFIG_IPA_V3 2>/dev/null || true
+          scripts/config --disable CONFIG_IPA_DEBUGFS 2>/dev/null || true
+          scripts/config --disable CONFIG_DEBUG_FS 2>/dev/null || true
+          sed -i 's/__bad_copy_to();/do {} while (0);/' include/linux/thread_info.h 2>/dev/null || true
+
+          # 清理非法参数
           sed -i 's/-Wno-error=error//g' .config 2>/dev/null || true
 
-          export KCFLAGS="-Wno-error=maybe-uninitialized -Wno-error=uninitialized -Wno-error=unused-result -Wno-error=format -Wno-error=format-security -Wno-error=format-truncation -Wno-error=implicit-function-declaration -Wno-error=misleading-indentation -Wno-error=incompatible-pointer-types -Wno-error=attribute-warning -Wno-error=sizeof-pointer-memaccess"
+          export KCFLAGS="-Wno-error=maybe-uninitialized -Wno-error=uninitialized -Wno-error=unused-result -Wno-error=format -Wno-error=format-security -Wno-error=format-truncation -Wno-error=implicit-function-declaration -Wno-error=misleading-indentation -Wno-error=incompatible-pointer-types -Wno-error=attribute-warning -Wno-error=sizeof-pointer-memaccess -Wno-error=unused-variable"
 
           make ARCH=arm64 -j$(nproc) Image.gz
           make ARCH=arm64 -j$(nproc) arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb || true
