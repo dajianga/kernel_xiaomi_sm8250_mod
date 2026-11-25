@@ -49,7 +49,7 @@ jobs:
 
       - name: Build kernel
         run: |
-          cp arch/arm64/configs/vendor/lmi_stock_defconfig arch/arm64/configs/lmi_stock_defconfig
+          cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
           make ARCH=arm64 lmi_stock_defconfig
 
           scripts/config --enable CONFIG_KSU
