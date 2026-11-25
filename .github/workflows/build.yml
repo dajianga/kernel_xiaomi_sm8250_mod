@@ -71,18 +71,27 @@ jobs:
           scripts/config --disable CONFIG_IPA_DEBUGFS 2>/dev/null || true
           scripts/config --disable CONFIG_DEBUG_FS 2>/dev/null || true
 
-          # ===== binder stub（幂等，防重复注入） =====
+          # ===== binder stub（全局函数版，防链接 undefined reference + 防重复定义） =====
           BINDER=drivers/android/binder.c
+          [ -f "$BINDER" ] || BINDER=techpack/android/binder.c
           if [ -f "$BINDER" ]; then
+            # 清理历史 static inline 残留
             sed -i '/^static inline int is_critical_task(struct task_struct \*t) { return 0; }/d' "$BINDER"
             sed -i '/^static inline void set_inherit_top_app(struct task_struct \*t, struct task_struct \*f) {}/d' "$BINDER"
             sed -i '/^static inline void restore_inherit_top_app(struct task_struct \*t) {}/d' "$BINDER"
-            sed -i '/#include <linux\/sched.h> \/\/ binder stub/d' "$BINDER"
-            if ! grep -q "is_critical_task" "$BINDER"; then
-              sed -i '1i #include <linux/sched.h> // binder stub' "$BINDER"
-              sed -i '1i static inline int is_critical_task(struct task_struct *t) { return 0; }' "$BINDER"
-              sed -i '1i static inline void set_inherit_top_app(struct task_struct *t, struct task_struct *f) {}' "$BINDER"
-              sed -i '1i static inline void restore_inherit_top_app(struct task_struct *t) {}' "$BINDER"
+            sed -i '/^#include <linux\/sched.h> \/\/ binder stub/d' "$BINDER"
+            sed -i '/^#ifndef is_critical_task/,/^#endif/d' "$BINDER"
+            sed -i '/^#ifndef set_inherit_top_app/,/^#endif/d' "$BINDER"
+            sed -i '/^#ifndef restore_inherit_top_app/,/^#endif/d' "$BINDER"
+            # 注入全局函数（非 static，链接器可见）
+            if ! grep -q "^int is_critical_task" "$BINDER"; then
+              sed -i '1i #include <linux/sched.h> /* binder stub */' "$BINDER"
+              sed -i '1i #ifndef __BINDER_STUB_FUNCS' "$BINDER"
+              sed -i '1i #define __BINDER_STUB_FUNCS' "$BINDER"
+              sed -i '1i int is_critical_task(struct task_struct *t) { return 0; }' "$BINDER"
+              sed -i '1i void set_inherit_top_app(struct task_struct *t, struct task_struct *f) {}' "$BINDER"
+              sed -i '1i void restore_inherit_top_app(struct task_struct *t) {}' "$BINDER"
+              sed -i '1i #endif' "$BINDER"
             fi
           fi
 
@@ -103,7 +112,7 @@ jobs:
           echo '/* stub */' > techpack/display/pll/pll_trace.h 2>/dev/null || true
           echo '/* stub */' > drivers/hid/hid-trace.h 2>/dev/null || true
 
-          # ===== cam_req_mgr_core.h 路径修复（cam_trace.h 找不到它） =====
+          # ===== cam_req_mgr_core.h 路径修复 =====
           CORE_H=techpack/camera/drivers/cam_req_mgr/cam_req_mgr_core.h
           if [ ! -f "$CORE_H" ]; then
             cat > "$CORE_H" <<'EOF'
@@ -119,7 +128,6 @@ jobs:
             sed -i 's|#include "cam_req_mgr_core.h"|#include "../cam_req_mgr/cam_req_mgr_core.h"|g' "$CAM_TRACE"
             sed -i 's|#include <cam_req_mgr_core.h>|#include "../cam_req_mgr/cam_req_mgr_core.h"|g' "$CAM_TRACE"
           fi
-          # 给 cam_utils / cam_req_mgr Makefile 加 -I
           for mkf in techpack/camera/drivers/cam_utils/Makefile techpack/camera/drivers/cam_req_mgr/Makefile; do
             [ -f "$mkf" ] && grep -q 'ccflags-y.*cam_req_mgr' "$mkf" || \
               echo 'ccflags-y += -I$(srctree)/$(src)/../cam_req_mgr' >> "$mkf" 2>/dev/null || true
@@ -142,10 +150,18 @@ jobs:
           sed -i 's/cam_context_buf_done_from_hw(ctx,/cam_context_buf_done_from_hw((struct cam_context *)ctx,/' \
             techpack/camera/drivers/cam_cust/cam_custom_context.c 2>/dev/null || true
 
-          # ===== cam_fd trace 调用点注释（根治链接 undefined reference） =====
+          # ===== cam_fd trace 调用点注释 =====
           FDCTX=techpack/camera/drivers/cam_fd/cam_fd_context.c
           if [ -f "$FDCTX" ]; then
             sed -i 's/^[[:space:]]*trace_cam_context_state(.*);/\/\/ &/' "$FDCTX"
+          fi
+
+          # ===== display pll atrace/trace 调用注释（防链接 undefined） =====
+          DSIPLL=techpack/display/pll/dsi_pll_10nm.c
+          if [ -f "$DSIPLL" ]; then
+            sed -i 's/^[[:space:]]*MDSS_PLL_ATRACE_BEGIN(.*);/\/\/ &/' "$DSIPLL"
+            sed -i 's/^[[:space:]]*MDSS_PLL_ATRACE_END(.*);/\/\/ &/' "$DSIPLL"
+            sed -i 's/^[[:space:]]*trace_mddss_pll_.*(.*);/\/\/ &/' "$DSIPLL"
           fi
 
           # ===== IPA __bad_copy_to 兜底 =====
