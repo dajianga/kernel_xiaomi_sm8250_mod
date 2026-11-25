@@ -78,36 +78,48 @@ jobs:
           sed -i 's/^obj-y.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
           sed -i 's/^obj-m.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
 
-          # trace headers (仅 stub 空文件，不覆盖宏/枚举)
-          echo '/* stub */' > drivers/clk/qcom/trace.h 2>/dev/null || true
-          echo '/* stub */' > techpack/display/pll/pll_trace.h 2>/dev/null || true
-          echo '/* stub */' > techpack/camera/drivers/cam_utils/cam_trace.h 2>/dev/null || true
-          echo '/* stub */' > drivers/hid/hid-trace.h 2>/dev/null || true
-          # icp trace: 保留原结构，仅确保文件存在（若原仓库有则不清空）
-          [ -f techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/trace.h ] || \
-            echo '/* stub */' > techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/trace.h
-          printf '#ifndef CAM_REQ_MGR_CORE_STUB_H\n#define CAM_REQ_MGR_CORE_STUB_H\nstruct cam_req_mgr_core_device;\n#endif\n' >> techpack/camera/drivers/cam_req_mgr/cam_req_mgr_core.h 2>/dev/null || true
+          # binder stub (保留原有效补丁)
+          sed -i '1i #include <linux/sched.h>' drivers/android/binder.c
+          sed -i '2i static inline int is_critical_task(struct task_struct *t) { return 0; }' drivers/android/binder.c
+          sed -i '3i static inline void set_inherit_top_app(struct task_struct *t, struct task_struct *f) {}' drivers/android/binder.c
+          sed -i '4i static inline void restore_inherit_top_app(struct task_struct *t) {}' drivers/android/binder.c
 
-          # ✅ camera ICP 修复（终极版：不破坏 CAM_CTX_ACQUIRED，仅安全 stub trace）
+          # audio (保留原有效补丁)
+          sed -i 's/active_ch_cnt:%lu/active_ch_cnt:%lx/' techpack/audio/asoc/codecs/bolero/tx-macro.c 2>/dev/null || true
+          sed -i 's/active_ch_cnt:%d/active_ch_cnt:%lx/' techpack/audio/asoc/codecs/bolero/tx-macro.c 2>/dev/null || true
+          sed -i 's/with err %d/with err %ld/' drivers/char/adspprpc.c 2>/dev/null || true
+          sed -i 's/int ret;/int ret = 0;/' techpack/audio/asoc/codecs/cs35141/vm_adsp.c 2>/dev/null || true
+          sed -i 's/int port_idx;/int port_idx = 0;/' techpack/audio/dsp/q6adm.c 2>/dev/null || true
+
+          # clk (保留原有效补丁，仅 clk-debug 清空，不动 camera trace)
+          : > drivers/clk/qcom/clk-debug.c 2>/dev/null || true
+          sed -i 's/^obj-y.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
+          sed -i 's/^obj-m.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
+
+          # ✅ 终极 Camera / Trace 修复（不清空任何头文件，仅 stub 调用点）
+          # 1. 确保 cam_icp_hw_mgr.c 不破坏枚举，仅安全 stub 自身 trace
           CICP=techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c
-          # 1. 确保包含 cam_context.h（提供 CAM_CTX_ACQUIRED 枚举）
           grep -q '#include "cam_context.h"' $CICP || sed -i '1i #include "cam_context.h"' $CICP
-          # 2. 清理历史误注入的宏（避免重复/冲突，但不删源码原有逻辑）
           sed -i '/^#define CAM_CTX_ACQUIRED/d' $CICP
           sed -i '/^#define trace_cam_icp_fw_dbg.*do {}/d' $CICP
-          # 3. 安全 stub trace（函数式宏，不干扰 TRACE_EVENT 展开）
           grep -q '#define trace_cam_icp_fw_dbg(a, b) do {} while (0)' $CICP || \
             sed -i '1i #define trace_cam_icp_fw_dbg(a, b) do {} while (0)' $CICP
-          # 4. cam_custom_context 类型转换补丁（历史稳定）
           sed -i 's/cam_context_buf_done_from_hw(ctx,/cam_context_buf_done_from_hw((struct cam_context *)ctx,/' techpack/camera/drivers/cam_cust/cam_custom_context.c 2>/dev/null || true
 
-          # cam_cci_dev.h 路径修复（历史）
+          # 2. ✅ 直接注释掉 cam_fd_context.c 中的 trace_cam_context_state 调用（根治链接错误）
+          FDCTX=techpack/camera/drivers/cam_fd/cam_fd_context.c
+          if [ -f "$FDCTX" ]; then
+            sed -i 's/^[[:space:]]*trace_cam_context_state(.*);/\/\/ &/' "$FDCTX"
+          fi
+
+          # 3. 其他历史路径/头文件补丁（保留）
           sed -i 's|#include "cam_cci_dev.h"|#include "../cam_cci/cam_cci_dev.h"|g' \
             techpack/camera/drivers/cam_sensor_module/cam_sensor_io/cam_sensor_i2c.h 2>/dev/null || true
           grep -q 'ccflags-y.*-I\$(srctree)/\$(src)' techpack/camera/drivers/cam_sensor_module/cam_cci/Makefile 2>/dev/null || \
             echo 'ccflags-y += -I$(srctree)/$(src)' >> techpack/camera/drivers/cam_sensor_module/cam_cci/Makefile 2>/dev/null || true
+          printf '#ifndef CAM_REQ_MGR_CORE_STUB_H\n#define CAM_REQ_MGR_CORE_STUB_H\nstruct cam_req_mgr_core_device;\n#endif\n' >> techpack/camera/drivers/cam_req_mgr/cam_req_mgr_core.h 2>/dev/null || true
 
-          # IPA / debugfs 兜底
+          # IPA / debugfs / thread_info 兜底
           scripts/config --disable CONFIG_IPA_V3 2>/dev/null || true
           scripts/config --disable CONFIG_IPA_DEBUGFS 2>/dev/null || true
           scripts/config --disable CONFIG_DEBUG_FS 2>/dev/null || true
@@ -124,41 +136,9 @@ jobs:
           grep -E "CONFIG_KSU|CONFIG_KSU_SUSFS|CONFIG_IPA|CONFIG_DEBUG_FS" .config | sort -u || true
           echo "======================="
 
+          # ✅ 编译（确保上述补丁全生效后再 make）
           make ARCH=arm64 -j$(nproc) Image.gz
           make ARCH=arm64 -j$(nproc) arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb || true
-
-          # ===== 修复 cam_fd / cam_context trace 链接缺失 =====
-          # 1. 恢复被清空的相机 trace 头（若之前被 rm/覆盖为 stub）
-          #    仅当文件不存在或仅为空 stub 时还原（避免破坏原仓库）
-          for f in techpack/camera/drivers/cam_utils/cam_trace.h \
-                   techpack/camera/drivers/cam_fd/cam_fd_trace.h \
-                   techpack/camera/drivers/cam_core/cam_context_trace.h; do
-            if [ -f "$f" ] && [ "$(wc -c <$f)" -lt 50 ]; then
-              rm -f "$f"
-            fi
-          done
-          # 若仓库本就没有这些头，需保证调用处不依赖 TRACE_EVENT（见第3步）
-
-          # 2. 确保 cam_fd / cam_context 的 CREATE_TRACE_POINTS 实例化文件存在且未被屏蔽
-          #    常见实例化位置（二选一或都存在）：cam_fd/cam_fd.c / cam_core/cam_context.c
-          for inst in techpack/camera/drivers/cam_fd/cam_fd.c \
-                      techpack/camera/drivers/cam_core/cam_context.c; do
-            if [ -f "$inst" ]; then
-              grep -q "CREATE_TRACE_POINTS" "$inst" || \
-                sed -i '1i #define CREATE_TRACE_POINTS' "$inst"
-            fi
-          done
-
-          # 3. 兜底：若仍链接失败（头不存在/TRACE_EVENT无实例化），直接 stub 掉 cam_fd_context.c 的调用
-          FDCTX=techpack/camera/drivers/cam_fd/cam_fd_context.c
-          if [ -f "$FDCTX" ]; then
-            # 把 trace_cam_context_state(...) 调用改为空（保留函数逻辑）
-            sed -i 's/trace_cam_context_state([^;]*);/do {} while (0);/g' "$FDCTX"
-          fi
-
-          # 4. 同步清理历史误注入（防重复宏）
-          CICP=techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c
-          [ -f "$CICP" ] && sed -i '/#define CAM_CTX_ACQUIRED/d;/#define trace_cam_icp_fw_dbg/d' "$CICP"
 
           # 合成 Image.gz-dtb
           if [ -f arch/arm64/boot/Image.gz ] && [ -f arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb ]; then
