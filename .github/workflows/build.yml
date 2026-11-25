@@ -66,26 +66,35 @@ jobs:
           scripts/config --disable CONFIG_CLK_QCOM_DEBUG 2>/dev/null || true
           scripts/config --disable CONFIG_CLK_DEBUG 2>/dev/null || true
 
+          # binder stub
           sed -i '1i #include <linux/sched.h>' drivers/android/binder.c
           sed -i '2i static inline int is_critical_task(struct task_struct *t) { return 0; }' drivers/android/binder.c
           sed -i '3i static inline void set_inherit_top_app(struct task_struct *t, struct task_struct *f) {}' drivers/android/binder.c
           sed -i '4i static inline void restore_inherit_top_app(struct task_struct *t) {}' drivers/android/binder.c
 
+          # audio format / ret / port_idx
           sed -i 's/active_ch_cnt:%lu/active_ch_cnt:%lx/' techpack/audio/asoc/codecs/bolero/tx-macro.c 2>/dev/null || true
           sed -i 's/active_ch_cnt:%d/active_ch_cnt:%lx/' techpack/audio/asoc/codecs/bolero/tx-macro.c 2>/dev/null || true
           sed -i 's/with err %d/with err %ld/' drivers/char/adspprpc.c 2>/dev/null || true
           sed -i 's/int ret;/int ret = 0;/' techpack/audio/asoc/codecs/cs35141/vm_adsp.c 2>/dev/null || true
+          sed -i 's/int port_idx;/int port_idx = 0;/' techpack/audio/dsp/q6adm.c 2>/dev/null || true
 
+          # clk-debug 空 + 去 obj
           : > drivers/clk/qcom/clk-debug.c 2>/dev/null || true
           sed -i 's/^obj-y.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
           sed -i 's/^obj-m.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
 
+          # trace / 缺失头 空壳（含本轮 hid）
           echo '/* stub */' > drivers/clk/qcom/trace.h 2>/dev/null || true
           echo '/* stub */' > techpack/display/pll/pll_trace.h 2>/dev/null || true
           echo '/* stub */' > techpack/camera/drivers/cam_utils/cam_trace.h 2>/dev/null || true
+          echo '/* stub */' > drivers/hid/hid-trace.h 2>/dev/null || true
           printf '#ifndef CAM_REQ_MGR_CORE_STUB_H\n#define CAM_REQ_MGR_CORE_STUB_H\nstruct cam_req_mgr_core_device;\n#endif\n' >> techpack/camera/drivers/cam_req_mgr/cam_req_mgr_core.h 2>/dev/null || true
 
-          export KCFLAGS="-Wno-error=maybe-uninitialized -Wno-error=unused-result -Wno-error=format -Wno-error=format-security -Wno-error=format-truncation -Wno-error=implicit-function-declaration -Wno-error=misleading-indentation"
+          # camera ctx cast
+          sed -i 's/cam_context_buf_done_from_hw(ctx,/cam_context_buf_done_from_hw((struct cam_context *)ctx,/' techpack/camera/drivers/cam_cust/cam_custom_context.c 2>/dev/null || true
+
+          export KCFLAGS="-Wno-error=maybe-uninitialized -Wno-error=uninitialized -Wno-error=unused-result -Wno-error=format -Wno-error=format-security -Wno-error=format-truncation -Wno-error=implicit-function-declaration -Wno-error=misleading-indentation -Wno-error=incompatible-pointer-types"
 
           make ARCH=arm64 -j$(nproc) Image.gz
           make ARCH=arm64 -j$(nproc) arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb || true
