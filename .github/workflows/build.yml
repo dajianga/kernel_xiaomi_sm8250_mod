@@ -51,24 +51,33 @@ jobs:
       - name: Build kernel
         run: |
           set -e
+          export PATH="$PWD/proton-clang-20210522/bin:$PATH"
+          export ARCH=arm64
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export KCFLAGS="-w"
+          export DTC_FLAGS="-f"
+
           cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
           make ARCH=arm64 lmi_stock_defconfig
+
           scripts/config --enable CONFIG_KSU
           scripts/config --enable CONFIG_KSU_SUSFS
           scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
           scripts/config --disable CONFIG_CLK_QCOM_DEBUG 2>/dev/null || true
           scripts/config --disable CONFIG_CLK_DEBUG 2>/dev/null || true
+          scripts/config --disable CONFIG_IPA_V3 2>/dev/null || true
+          scripts/config --disable CONFIG_IPA_DEBUGFS 2>/dev/null || true
+          scripts/config --disable CONFIG_DEBUG_FS 2>/dev/null || true
 
-          # ===== binder stub（防重复注入终极版） =====
-          BINDER=techpack/android/binder.c
-          [ -f "$BINDER" ] || BINDER=drivers/android/binder.c
+          # ===== binder stub（幂等，防重复注入） =====
+          BINDER=drivers/android/binder.c
           if [ -f "$BINDER" ]; then
-            # 清理历史误注入的 stub
             sed -i '/^static inline int is_critical_task(struct task_struct \*t) { return 0; }/d' "$BINDER"
             sed -i '/^static inline void set_inherit_top_app(struct task_struct \*t, struct task_struct \*f) {}/d' "$BINDER"
             sed -i '/^static inline void restore_inherit_top_app(struct task_struct \*t) {}/d' "$BINDER"
-            sed -i '/^#include <linux\/sched.h>\/\/ binder stub/d' "$BINDER"
-            # 仅当源码中不存在这些函数时，才安全插入
+            sed -i '/#include <linux\/sched.h> \/\/ binder stub/d' "$BINDER"
             if ! grep -q "is_critical_task" "$BINDER"; then
               sed -i '1i #include <linux/sched.h> // binder stub' "$BINDER"
               sed -i '1i static inline int is_critical_task(struct task_struct *t) { return 0; }' "$BINDER"
@@ -77,76 +86,84 @@ jobs:
             fi
           fi
 
-          # ===== audio 补丁 =====
+          # ===== audio（printf 格式符修复） =====
           sed -i 's/active_ch_cnt:%lu/active_ch_cnt:%lx/' techpack/audio/asoc/codecs/bolero/tx-macro.c 2>/dev/null || true
           sed -i 's/active_ch_cnt:%d/active_ch_cnt:%lx/' techpack/audio/asoc/codecs/bolero/tx-macro.c 2>/dev/null || true
           sed -i 's/with err %d/with err %ld/' drivers/char/adspprpc.c 2>/dev/null || true
           sed -i 's/int ret;/int ret = 0;/' techpack/audio/asoc/codecs/cs35141/vm_adsp.c 2>/dev/null || true
           sed -i 's/int port_idx;/int port_idx = 0;/' techpack/audio/dsp/q6adm.c 2>/dev/null || true
 
-          # ===== clk 补丁 =====
+          # ===== clk-debug（空文件+注释Makefile） =====
           : > drivers/clk/qcom/clk-debug.c 2>/dev/null || true
           sed -i 's/^obj-y.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
           sed -i 's/^obj-m.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
-          # 仅 stub 非相机 trace（避免破坏 cam_trace.h 的 TRACE_EVENT）
+
+          # ===== 非相机 trace stub（仅限确定无 TRACE_EVENT 的） =====
           echo '/* stub */' > drivers/clk/qcom/trace.h 2>/dev/null || true
           echo '/* stub */' > techpack/display/pll/pll_trace.h 2>/dev/null || true
           echo '/* stub */' > drivers/hid/hid-trace.h 2>/dev/null || true
 
-          # ===== camera ICP 修复（终极版：不注入 trace 宏，防 TRACE_EVENT 冲突） =====
-          CICP=techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c
-          if [ -f "$CICP" ]; then
-            # 确保包含 cam_context.h（提供 CAM_CTX_ACQUIRED 枚举）
-            grep -q '#include "cam_context.h"' "$CICP" || sed -i '1i #include "cam_context.h"' "$CICP"
-            # 清理历史误注入的宏
-            sed -i '/^#define trace_cam_icp_fw_dbg/d' "$CICP"
-            sed -i '/^#define CAM_CTX_ACQUIRED/d' "$CICP"
-            # 终极兜底：直接注释 trace_cam_icp_fw_dbg 调用点（防宏展开冲突）
-            sed -i 's/^[[:space:]]*trace_cam_icp_fw_dbg(.*);/\/\/ &/' "$CICP"
-            # cam_custom_context 类型转换
-            sed -i 's/cam_context_buf_done_from_hw(ctx,/cam_context_buf_done_from_hw((struct cam_context *)ctx,/' techpack/camera/drivers/cam_cust/cam_custom_context.c 2>/dev/null || true
+          # ===== cam_req_mgr_core.h 路径修复（cam_trace.h 找不到它） =====
+          CORE_H=techpack/camera/drivers/cam_req_mgr/cam_req_mgr_core.h
+          if [ ! -f "$CORE_H" ]; then
+            cat > "$CORE_H" <<'EOF'
+#ifndef CAM_REQ_MGR_CORE_H
+#define CAM_REQ_MGR_CORE_H
+struct cam_req_mgr_core_device;
+struct cam_req_mgr_core_ctx;
+#endif
+EOF
           fi
+          CAM_TRACE=techpack/camera/drivers/cam_utils/cam_trace.h
+          if [ -f "$CAM_TRACE" ]; then
+            sed -i 's|#include "cam_req_mgr_core.h"|#include "../cam_req_mgr/cam_req_mgr_core.h"|g' "$CAM_TRACE"
+            sed -i 's|#include <cam_req_mgr_core.h>|#include "../cam_req_mgr/cam_req_mgr_core.h"|g' "$CAM_TRACE"
+          fi
+          # 给 cam_utils / cam_req_mgr Makefile 加 -I
+          for mkf in techpack/camera/drivers/cam_utils/Makefile techpack/camera/drivers/cam_req_mgr/Makefile; do
+            [ -f "$mkf" ] && grep -q 'ccflags-y.*cam_req_mgr' "$mkf" || \
+              echo 'ccflags-y += -I$(srctree)/$(src)/../cam_req_mgr' >> "$mkf" 2>/dev/null || true
+          done
 
-          # ===== cam_cci 路径修复 =====
+          # ===== cam_cci_dev.h 路径修复 =====
           sed -i 's|#include "cam_cci_dev.h"|#include "../cam_cci/cam_cci_dev.h"|g' \
             techpack/camera/drivers/cam_sensor_module/cam_sensor_io/cam_sensor_i2c.h 2>/dev/null || true
-          grep -q 'ccflags-y.*-I\$(srctree)/\$(src)' techpack/camera/drivers/cam_sensor_module/cam_cci/Makefile 2>/dev/null || \
+          grep -q 'ccflags-y.*-I\$(srctree).*cam_cci' techpack/camera/drivers/cam_sensor_module/cam_cci/Makefile 2>/dev/null || \
             echo 'ccflags-y += -I$(srctree)/$(src)' >> techpack/camera/drivers/cam_sensor_module/cam_cci/Makefile 2>/dev/null || true
 
-          # ===== cam_req_mgr 头文件兜底 =====
-          printf '#ifndef CAM_REQ_MGR_CORE_STUB_H\n#define CAM_REQ_MGR_CORE_STUB_H\nstruct cam_req_mgr_core_device;\n#endif\n' >> techpack/camera/drivers/cam_req_mgr/cam_req_mgr_core.h 2>/dev/null || true
+          # ===== camera ICP：不注入宏，仅注释 trace 调用点 =====
+          CICP=techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c
+          if [ -f "$CICP" ]; then
+            grep -q '#include "cam_context.h"' "$CICP" || sed -i '1i #include "cam_context.h"' "$CICP"
+            sed -i '/^#define trace_cam_icp_fw_dbg/d' "$CICP"
+            sed -i '/^#define CAM_CTX_ACQUIRED/d' "$CICP"
+            sed -i 's/^[[:space:]]*trace_cam_icp_fw_dbg(.*);/\/\/ &/' "$CICP"
+          fi
+          sed -i 's/cam_context_buf_done_from_hw(ctx,/cam_context_buf_done_from_hw((struct cam_context *)ctx,/' \
+            techpack/camera/drivers/cam_cust/cam_custom_context.c 2>/dev/null || true
 
-          # ===== cam_fd trace 链接缺失兜底（注释调用点） =====
+          # ===== cam_fd trace 调用点注释（根治链接 undefined reference） =====
           FDCTX=techpack/camera/drivers/cam_fd/cam_fd_context.c
           if [ -f "$FDCTX" ]; then
             sed -i 's/^[[:space:]]*trace_cam_context_state(.*);/\/\/ &/' "$FDCTX"
           fi
 
-          # ===== IPA / debugfs / thread_info 兜底 =====
-          scripts/config --disable CONFIG_IPA_V3 2>/dev/null || true
-          scripts/config --disable CONFIG_IPA_DEBUGFS 2>/dev/null || true
-          scripts/config --disable CONFIG_DEBUG_FS 2>/dev/null || true
+          # ===== IPA __bad_copy_to 兜底 =====
           sed -i 's/__bad_copy_to();/do {} while (0);/' include/linux/thread_info.h 2>/dev/null || true
 
-          # ===== 工具链 =====
-          export PATH="$PWD/proton-clang-20210522/bin:$PATH"
-          export CC=clang
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export KCFLAGS="-w"
-
+          # ===== 配置自检 =====
           echo "===== 关键配置自检 ====="
           grep -E "CONFIG_KSU|CONFIG_KSU_SUSFS|CONFIG_IPA|CONFIG_DEBUG_FS" .config | sort -u || true
           echo "======================="
 
-          # ===== 编译 =====
+          # ===== 正式编译 =====
           make ARCH=arm64 -j$(nproc) Image.gz
           make ARCH=arm64 -j$(nproc) arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb || true
 
           # ===== 合成 Image.gz-dtb =====
           if [ -f arch/arm64/boot/Image.gz ] && [ -f arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb ]; then
             cat arch/arm64/boot/Image.gz arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb > arch/arm64/boot/Image.gz-dtb
-            echo "✅ 已合成 Image.gz-dtb"
+            echo "✅ 已合成 Image.gz-dtb ($(du -h arch/arm64/boot/Image.gz-dtb | cut -f1))"
           else
             echo "⚠️ 未找到 dtb，仅使用 Image.gz"
           fi
