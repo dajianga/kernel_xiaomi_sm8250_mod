@@ -50,6 +50,7 @@ jobs:
 
       - name: Build kernel
         run: |
+          set -e
           cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
           make ARCH=arm64 lmi_stock_defconfig
 
@@ -77,52 +78,42 @@ jobs:
           sed -i 's/^obj-y.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
           sed -i 's/^obj-m.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
 
-          # 修复 hid-trace.h 缺失 (上一轮 fatal error)
+          # trace headers (仅 stub 空文件，不覆盖宏/枚举)
+          echo '/* stub */' > drivers/clk/qcom/trace.h 2>/dev/null || true
+          echo '/* stub */' > techpack/display/pll/pll_trace.h 2>/dev/null || true
+          echo '/* stub */' > techpack/camera/drivers/cam_utils/cam_trace.h 2>/dev/null || true
           echo '/* stub */' > drivers/hid/hid-trace.h 2>/dev/null || true
+          # icp trace: 保留原结构，仅确保文件存在（若原仓库有则不清空）
+          [ -f techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/trace.h ] || \
+            echo '/* stub */' > techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/trace.h
+          printf '#ifndef CAM_REQ_MGR_CORE_STUB_H\n#define CAM_REQ_MGR_CORE_STUB_H\nstruct cam_req_mgr_core_device;\n#endif\n' >> techpack/camera/drivers/cam_req_mgr/cam_req_mgr_core.h 2>/dev/null || true
 
-          # camera trace 头文件：恢复/保留原结构，仅 stub 空实现，绝不覆盖 CAM_CTX_ACQUIRED 宏
-          rm -f techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/trace.h
-          rm -f techpack/camera/drivers/cam_utils/cam_trace.h
-          rm -f techpack/display/pll/pll_trace.h
-          rm -f drivers/clk/qcom/trace.h
-          cat > techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/trace.h <<'EOF'
-          #if !defined(__CAM_ICP_HW_MGR_TRACE_H__) && defined(CONFIG_TRACEPOINTS)
-          #define __CAM_ICP_HW_MGR_TRACE_H__
-          #undef TRACE_SYSTEM
-          #define TRACE_SYSTEM cam_icp_hw_mgr
-          #include <linux/tracepoint.h>
-          TRACE_EVENT(cam_icp_fw_dbg, TP_PROTO(int a, int b), TP_ARGS(a, b), TP_STRUCT__entry(__field(int, a) __field(int, b)), TP_fast_assign(__entry->a = a; __entry->b = b;), TP_printk("stub"))
-          #endif
-          EOF
-          cat > techpack/camera/drivers/cam_utils/cam_trace.h <<'EOF'
-          #if !defined(__CAM_TRACE_H__) && defined(CONFIG_TRACEPOINTS)
-          #define __CAM_TRACE_H__
-          #undef TRACE_SYSTEM
-          #define TRACE_SYSTEM cam
-          #include <linux/tracepoint.h>
-          TRACE_EVENT(cam_xxx_stub, TP_PROTO(int a), TP_ARGS(a), TP_STRUCT__entry(__field(int, a)), TP_fast_assign(__entry->a = a;), TP_printk("stub"))
-          #endif
-          EOF
-
-          # 清理历史误注入的宏 (防止重复定义报错)
+          # ✅ camera ICP 修复（终极版：不破坏 CAM_CTX_ACQUIRED，仅安全 stub trace）
           CICP=techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c
-          sed -i '/#define CAM_CTX_ACQUIRED/d' $CICP
-          sed -i '/#define trace_cam_icp_fw_dbg(a, b) do {} while (0)/d' $CICP
-          sed -i '/#define trace_cam_icp_fw_dbg(a,b) do {} while(0)/d' $CICP
-          # 仅保留必要的类型转换补丁
+          # 1. 确保包含 cam_context.h（提供 CAM_CTX_ACQUIRED 枚举）
+          grep -q '#include "cam_context.h"' $CICP || sed -i '1i #include "cam_context.h"' $CICP
+          # 2. 清理历史误注入的宏（避免重复/冲突，但不删源码原有逻辑）
+          sed -i '/^#define CAM_CTX_ACQUIRED/d' $CICP
+          sed -i '/^#define trace_cam_icp_fw_dbg.*do {}/d' $CICP
+          # 3. 安全 stub trace（函数式宏，不干扰 TRACE_EVENT 展开）
+          grep -q '#define trace_cam_icp_fw_dbg(a, b) do {} while (0)' $CICP || \
+            sed -i '1i #define trace_cam_icp_fw_dbg(a, b) do {} while (0)' $CICP
+          # 4. cam_custom_context 类型转换补丁（历史稳定）
           sed -i 's/cam_context_buf_done_from_hw(ctx,/cam_context_buf_done_from_hw((struct cam_context *)ctx,/' techpack/camera/drivers/cam_cust/cam_custom_context.c 2>/dev/null || true
 
-          # cam_cci_dev.h 路径修复
-          sed -i 's|#include "cam_cci_dev.h"|#include "../cam_cci/cam_cci_dev.h"|g' techpack/camera/drivers/cam_sensor_module/cam_sensor_io/cam_sensor_i2c.h 2>/dev/null || true
-          grep -q 'ccflags-y.*-I\$(srctree)/\$(src)' techpack/camera/drivers/cam_sensor_module/cam_cci/Makefile 2>/dev/null || echo 'ccflags-y += -I$(srctree)/$(src)' >> techpack/camera/drivers/cam_sensor_module/cam_cci/Makefile 2>/dev/null || true
+          # cam_cci_dev.h 路径修复（历史）
+          sed -i 's|#include "cam_cci_dev.h"|#include "../cam_cci/cam_cci_dev.h"|g' \
+            techpack/camera/drivers/cam_sensor_module/cam_sensor_io/cam_sensor_i2c.h 2>/dev/null || true
+          grep -q 'ccflags-y.*-I\$(srctree)/\$(src)' techpack/camera/drivers/cam_sensor_module/cam_cci/Makefile 2>/dev/null || \
+            echo 'ccflags-y += -I$(srctree)/$(src)' >> techpack/camera/drivers/cam_sensor_module/cam_cci/Makefile 2>/dev/null || true
 
-          # IPA 兜底
+          # IPA / debugfs 兜底
           scripts/config --disable CONFIG_IPA_V3 2>/dev/null || true
           scripts/config --disable CONFIG_IPA_DEBUGFS 2>/dev/null || true
           scripts/config --disable CONFIG_DEBUG_FS 2>/dev/null || true
           sed -i 's/__bad_copy_to();/do {} while (0);/' include/linux/thread_info.h 2>/dev/null || true
 
-          # 工具链与警告屏蔽 (纯空格缩进，避免 YAML 报错)
+          # 工具链
           export PATH="$PWD/proton-clang-20210522/bin:$PATH"
           export CC=clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
@@ -136,7 +127,7 @@ jobs:
           make ARCH=arm64 -j$(nproc) Image.gz
           make ARCH=arm64 -j$(nproc) arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb || true
 
-          # 合成 Image.gz-dtb (严格同级缩进)
+          # 合成 Image.gz-dtb
           if [ -f arch/arm64/boot/Image.gz ] && [ -f arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb ]; then
             cat arch/arm64/boot/Image.gz arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb > arch/arm64/boot/Image.gz-dtb
             echo "✅ 已合成 Image.gz-dtb"
@@ -151,7 +142,6 @@ jobs:
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3
           cd AnyKernel3
           rm -rf .git README.md .github
-
           if [ -f ../arch/arm64/boot/Image.gz-dtb ]; then
             cp ../arch/arm64/boot/Image.gz-dtb .
           elif [ -f ../arch/arm64/boot/Image.gz ]; then
@@ -160,11 +150,10 @@ jobs:
             echo "❌ 内核镜像未生成，打包终止"
             exit 1
           fi
-          [ -f ../arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb ] && cp ../arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb ./dtb
-
+          [ -f ../arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb ] && \
+            cp ../arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb ./dtb
           sed -i 's/^kernel.string=.*/kernel.string=lmi-SukiSU-Ultra-4.19-MIUI-NoSpoof/' anykernel.sh
           sed -i 's/^do.devicecheck=.*/do.devicecheck=0/' anykernel.sh
-
           zip -r9 ../Kernel_lmi_SukiSU_4.19_MIUI_nospoof.zip . -x '*placeholder'
           cd ..
           ls -lh Kernel_lmi_SukiSU_4.19_MIUI_nospoof.zip
@@ -176,3 +165,4 @@ jobs:
           name: Kernel_lmi_SukiSU_4.19_MIUI_nospoof
           path: Kernel_lmi_SukiSU_4.19_MIUI_nospoof.zip
           if-no-files-found: error
+          
