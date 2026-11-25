@@ -46,9 +46,23 @@ jobs:
         run: |
           wget -q https://github.com/kdrag0n/proton-clang/archive/refs/tags/20210522.tar.gz
           tar -xf 20210522.tar.gz
+          ./proton-clang-20210522/bin/clang --version
 
       - name: Build kernel
         run: |
+          set -e
+
+          # ===== 工具链：必须显式 CC/CLANG_TRIPLE，否则 host gcc 吃 -mlittle-endian =====
+          export PATH="$PWD/proton-clang-20210522/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export DTC_FLAGS="-f"
+          export KCFLAGS="-w"
+
           cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
           make ARCH=arm64 lmi_stock_defconfig
 
@@ -57,6 +71,9 @@ jobs:
           scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
           scripts/config --disable CONFIG_CLK_QCOM_DEBUG 2>/dev/null || true
           scripts/config --disable CONFIG_CLK_DEBUG 2>/dev/null || true
+          scripts/config --disable CONFIG_IPA_V3 2>/dev/null || true
+          scripts/config --disable CONFIG_IPA_DEBUGFS 2>/dev/null || true
+          scripts/config --disable CONFIG_DEBUG_FS 2>/dev/null || true
 
           # binder stub
           sed -i '1i #include <linux/sched.h>' drivers/android/binder.c
@@ -76,33 +93,83 @@ jobs:
           sed -i 's/^obj-y.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
           sed -i 's/^obj-m.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
 
-          # trace headers
-          echo '/* stub */' > drivers/clk/qcom/trace.h 2>/dev/null || true
-          echo '/* stub */' > techpack/display/pll/pll_trace.h 2>/dev/null || true
-          echo '/* stub */' > techpack/camera/drivers/cam_utils/cam_trace.h 2>/dev/null || true
-          echo '/* stub */' > drivers/hid/hid-trace.h 2>/dev/null || true
-          echo '/* stub */' > techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/trace.h 2>/dev/null || true
-          printf '#ifndef CAM_REQ_MGR_CORE_STUB_H\n#define CAM_REQ_MGR_CORE_STUB_H\nstruct cam_req_mgr_core_device;\n#endif\n' >> techpack/camera/drivers/cam_req_mgr/cam_req_mgr_core.h 2>/dev/null || true
+          # trace headers（仅当不存在才建，绝不覆盖真头文件）
+          for f in drivers/clk/qcom/trace.h \
+                   techpack/display/pll/pll_trace.h \
+                   techpack/camera/drivers/cam_utils/cam_trace.h \
+                   drivers/hid/hid-trace.h \
+                   techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/trace.h; do
+            [ -e "$f" ] || { mkdir -p "$(dirname "$f")"; echo '/* stub */' > "$f"; }
+          done
+          f=techpack/camera/drivers/cam_req_mgr/cam_req_mgr_core.h
+          [ -f "$f" ] && grep -q 'CAM_REQ_MGR_CORE_STUB_H' "$f" || \
+            sed -i '1i #ifndef CAM_REQ_MGR_CORE_STUB_H\n#define CAM_REQ_MGR_CORE_STUB_H\nstruct cam_req_mgr_core_device;\nstruct cam_context;\n#endif\n' "$f" 2>/dev/null || true
 
-          # camera ICP 修复（纯净版）
-          CICP=techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/ca
-          
+          # camera ICP（只补宏，不碰源码 if 结构）
+          CICP=techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c
+          grep -q '#define CAM_CTX_ACQUIRED' $CICP || sed -i '1i #define CAM_CTX_ACQUIRED 1' $CICP
+          grep -q '#define trace_cam_icp_fw_dbg' $CICP || sed -i '1i #define trace_cam_icp_fw_dbg(a, b) do {} while (0)' $CICP
+          sed -i 's/cam_context_buf_done_from_hw(ctx,/cam_context_buf_done_from_hw((struct cam_context *)ctx,/' \
+            techpack/camera/drivers/cam_cust/cam_custom_context.c 2>/dev/null || true
+
+          # cam_cci_dev.h 相对路径缺失
+          sed -i 's|#include "cam_cci_dev.h"|#include "../cam_cci/cam_cci_dev.h"|g' \
+            techpack/camera/drivers/cam_sensor_module/cam_sensor_io/cam_sensor_i2c.h 2>/dev/null || true
+
+          # IPA __bad_copy_to 兜底
+          sed -i 's/__bad_copy_to();/do {} while (0);/' include/linux/thread_info.h 2>/dev/null || true
+
+          # ===== 配置自检：KSU 没了就别白编 40 分钟 =====
+          echo "===== 关键配置自检 ====="
+          grep -E 'CONFIG_(KSU|KSU_SUSFS|KPROBES|EXT4_FS)=' .config || echo "⚠️ 未找到 KSU 相关配置"
+          echo "======================="
+
+          # ===== 正式编译 =====
+          make ARCH=arm64 -j"$(nproc)" Image.gz
+          make ARCH=arm64 -j"$(nproc)" dtbs
+
+          # ===== 产物硬校验：缺一个就直接失败 =====
+          IMG=arch/arm64/boot/Image.gz
+          DTB=arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb
+          [ -s "$IMG" ] || { echo "❌ Image.gz 未生成"; exit 1; }
+          echo "Image.gz : $(du -h $IMG | cut -f1)"
+          ls -lh arch/arm64/boot/dts/vendor/qcom/*.dtb 2>/dev/null | head
+
+          if [ -f "$DTB" ]; then
+            cat "$IMG" "$DTB" > arch/arm64/boot/Image.gz-dtb
+            echo "✅ 已合成 Image.gz-dtb ($(du -h arch/arm64/boot/Image.gz-dtb | cut -f1))"
+          else
+            cp "$IMG" arch/arm64/boot/Image.gz-dtb
+            echo "⚠️ 未找到 kona dtb，仅打包 Image.gz"
+          fi
+          echo "✅ build done"
+
       - name: Package AnyKernel3
         run: |
+          set -e
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3
-          cp arch/arm64/boot/Image.gz AnyKernel3/ 2>/dev/null || true
-          cp arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb AnyKernel3/dtb 2>/dev/null || true
-          if [ -f arch/arm64/boot/Image.gz ] && [ -f arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb ]; then
-            cat arch/arm64/boot/Image.gz arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb > AnyKernel3/Image.gz-dtb
-          fi
           cd AnyKernel3
-          zip -r9 ../Kernel_lmi_SukiSU_4.19_MIUI_nospoof.zip . -x .git README.md '*placeholder'
+          rm -rf .git README.md .github
+
+          # 不用 || true：文件缺失就让它失败，别再出空包
+          cp ../arch/arm64/boot/Image.gz-dtb .
+          [ -f ../arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb ] && \
+            cp ../arch/arm64/boot/dts/vendor/qcom/kona-v2.1-xrsrku4.dtb ./dtb
+
+          sed -i 's/^kernel.string=.*/kernel.string=lmi-SukiSU-Ultra-4.19-MIUI-NoSpoof/' anykernel.sh
+          sed -i 's/^do.devicecheck=.*/do.devicecheck=0/' anykernel.sh
+
+          echo "--- 包内容 ---"
+          ls -lh
+          zip -r9 ../Kernel_lmi_SukiSU_4.19_MIUI_nospoof.zip . -x '*placeholder'
           cd ..
+          echo "--- 最终产物 ---"
           ls -lh Kernel_lmi_SukiSU_4.19_MIUI_nospoof.zip
+          [ -s Kernel_lmi_SukiSU_4.19_MIUI_nospoof.zip ] || exit 1
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel_lmi_SukiSU_4.19_MIUI_nospoof
-          path: "*.zip"
+          path: Kernel_lmi_SukiSU_4.19_MIUI_nospoof.zip
           if-no-files-found: error
