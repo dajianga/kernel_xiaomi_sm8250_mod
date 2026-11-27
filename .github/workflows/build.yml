@@ -71,27 +71,37 @@ jobs:
           scripts/config --disable CONFIG_IPA_DEBUGFS 2>/dev/null || true
           scripts/config --disable CONFIG_DEBUG_FS 2>/dev/null || true
 
-          # ===== binder stub（全局函数版，防链接 undefined reference + 防重复定义） =====
+          # ===== binder stub（整块配对注入，防 #endif/#ifndef 错乱） =====
           BINDER=drivers/android/binder.c
           [ -f "$BINDER" ] || BINDER=techpack/android/binder.c
           if [ -f "$BINDER" ]; then
-            # 清理历史 static inline 残留
-            sed -i '/^static inline int is_critical_task(struct task_struct \*t) { return 0; }/d' "$BINDER"
-            sed -i '/^static inline void set_inherit_top_app(struct task_struct \*t, struct task_struct \*f) {}/d' "$BINDER"
-            sed -i '/^static inline void restore_inherit_top_app(struct task_struct \*t) {}/d' "$BINDER"
-            sed -i '/^#include <linux\/sched.h> \/\/ binder stub/d' "$BINDER"
+            # 清理历史所有残留
+            sed -i '/__BINDER_STUB_FUNCS/d' "$BINDER"
+            sed -i '/^static inline int is_critical_task/d' "$BINDER"
+            sed -i '/^static inline void set_inherit_top_app/d' "$BINDER"
+            sed -i '/^static inline void restore_inherit_top_app/d' "$BINDER"
+            sed -i '/^int is_critical_task(struct task_struct \*t) { return 0; }/d' "$BINDER"
+            sed -i '/^void set_inherit_top_app(struct task_struct \*t, struct task_struct \*f) {}/d' "$BINDER"
+            sed -i '/^void restore_inherit_top_app(struct task_struct \*t) {}/d' "$BINDER"
+            sed -i '/#include <linux\/sched.h> \/\/ binder stub/d' "$BINDER"
             sed -i '/^#ifndef is_critical_task/,/^#endif/d' "$BINDER"
             sed -i '/^#ifndef set_inherit_top_app/,/^#endif/d' "$BINDER"
             sed -i '/^#ifndef restore_inherit_top_app/,/^#endif/d' "$BINDER"
-            # 注入全局函数（非 static，链接器可见）
-            if ! grep -q "^int is_critical_task" "$BINDER"; then
-              sed -i '1i #include <linux/sched.h> /* binder stub */' "$BINDER"
-              sed -i '1i #ifndef __BINDER_STUB_FUNCS' "$BINDER"
-              sed -i '1i #define __BINDER_STUB_FUNCS' "$BINDER"
-              sed -i '1i int is_critical_task(struct task_struct *t) { return 0; }' "$BINDER"
-              sed -i '1i void set_inherit_top_app(struct task_struct *t, struct task_struct *f) {}' "$BINDER"
-              sed -i '1i void restore_inherit_top_app(struct task_struct *t) {}' "$BINDER"
-              sed -i '1i #endif' "$BINDER"
+
+            # 整块注入（配对正确，不会乱序）
+            if ! grep -q "is_critical_task" "$BINDER"; then
+              {
+                echo '#ifndef __BINDER_STUB_FUNCS'
+                echo '#define __BINDER_STUB_FUNCS'
+                echo '#include <linux/sched.h>'
+                echo 'int is_critical_task(struct task_struct *t) { return 0; }'
+                echo 'void set_inherit_top_app(struct task_struct *t, struct task_struct *f) {}'
+                echo 'void restore_inherit_top_app(struct task_struct *t) {}'
+                echo '#endif'
+                echo ''
+                cat "$BINDER"
+              } > "$BINDER.tmp" && mv "$BINDER.tmp" "$BINDER"
+              echo "✅ 已注入 binder stub（配对安全）"
             fi
           fi
 
