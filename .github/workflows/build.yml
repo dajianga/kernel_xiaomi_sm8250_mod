@@ -51,30 +51,19 @@ jobs:
       - name: Build kernel
         run: |
           set -e
-          export PATH="$PWD/proton-clang-20210522/bin:$PATH"
           export ARCH=arm64
-          export CC=clang
-          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export SUBARCH=arm64
+          export PATH="$(pwd)/proton-clang/bin:$PATH"
           export CROSS_COMPILE=aarch64-linux-gnu-
-          export KCFLAGS="-w"
-          export DTC_FLAGS="-f"
 
-          cp arch/arm64/configs/lmi_stock-defconfig arch/arm64/configs/lmi_stock_defconfig
-          make ARCH=arm64 lmi_stock_defconfig
-
-          scripts/config --enable CONFIG_KSU
-          scripts/config --enable CONFIG_KSU_SUSFS
-          scripts/config --disable CONFIG_KSU_SUSFS_SPOOF_UNAME
-          scripts/config --disable CONFIG_CLK_QCOM_DEBUG 2>/dev/null || true
-          scripts/config --disable CONFIG_CLK_DEBUG 2>/dev/null || true
-          scripts/config --disable CONFIG_CLK_QCOM_UEBUG 2>/dev/null || true
-          scripts/config --disable CONFIG_COMMON_CLK_QCOM_UEBUG 2>/dev/null || true
-          scripts/config --disable CONFIG_DEBUG_CC 2>/dev/null || true
-          scripts/config --disable CONFIG_CLK_QCOM_DEBUGCC 2>/dev/null || true
+          # ===== 关键配置（不关 DEBUG_FS） =====
           scripts/config --disable CONFIG_IPA_V3 2>/dev/null || true
           scripts/config --disable CONFIG_IPA_DEBUGFS 2>/dev/null || true
+          scripts/config --disable CONFIG_DEBUG_CC 2>/dev/null || true
+          scripts/config --disable CONFIG_CLK_QCOM_DEBUGCC 2>/dev/null || true
+          scripts/config --disable CONFIG_CLK_QCOM_UEBUG 2>/dev/null || true
 
-          # ===== binder stub（整块配对注入） =====
+          # ===== binder stub =====
           BINDER=drivers/android/binder.c
           [ -f "$BINDER" ] || BINDER=techpack/android/binder.c
           if [ -f "$BINDER" ]; then
@@ -108,19 +97,20 @@ jobs:
           sed -i 's/int ret;/int ret = 0;/' techpack/audio/asoc/codecs/cs35141/vm_adsp.c 2>/dev/null || true
           sed -i 's/int port_idx;/int port_idx = 0;/' techpack/audio/dsp/q6adm.c 2>/dev/null || true
 
-          # ===== clk-debug / uebug / debugcc 彻底清空+屏蔽 =====
-          : > drivers/clk/qcom/clk-debug.c 2>/dev/null || true
-          : > drivers/clk/qcom/clk-uebug.c 2>/dev/null || true
-          : > drivers/clk/qcom/debugcc-kona.c 2>/dev/null || true
+          # ===== clk-debug / uebug / debugcc 空实现兜底（不删对象，防引用断链） =====
           cat > drivers/clk/qcom/clk-uebug.c <<'EOF'
           #include <linux/clk-provider.h>
+          #include <linux/module.h>
           const struct clk_ops clk_uebug_mux_ops = {};
           int clk_uebug_measure_add(struct clk *clk, void *data) { return 0; }
+          EXPORT_SYMBOL(clk_uebug_mux_ops);
           EXPORT_SYMBOL(clk_uebug_measure_add);
           EOF
           cat > drivers/clk/qcom/clk-debug.c <<'EOF'
           #include <linux/clk-provider.h>
           #include <linux/io.h>
+          #include <linux/module.h>
+          #include <linux/platform_device.h>
           const struct clk_ops clk_debug_mux_ops = {};
           void __iomem *map_debug_bases(struct platform_device *pdev, const char *name, int index) { return NULL; }
           int clk_debug_measure_register(struct clk_hw *hw) { return 0; }
@@ -128,9 +118,21 @@ jobs:
           EXPORT_SYMBOL(map_debug_bases);
           EXPORT_SYMBOL(clk_debug_measure_register);
           EOF
-          sed -i -E 's/^[[:space:]]*(obj-y|obj-m)[[:space:]]*\+?=[^#]*(clk-debug|clk-uebug|debugcc-kona)[^#]*/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
+          cat > drivers/clk/qcom/debugcc-kona.c <<'EOF'
+          #include <linux/init.h>
+          #include <linux/module.h>
+          static int __init debugcc_kona_init(void) { return 0; }
+          static void __exit debugcc_kona_exit(void) {}
+          module_init(debugcc_kona_init);
+          module_exit(debugcc_kona_exit);
+          MODULE_LICENSE("GPL");
+          EOF
+          sed -i -E 's/^#[[:space:]]*(obj-y|obj-m)[[:space:]]*\+?=[^#]*(clk-debug|clk-uebug|debugcc-kona)/\1/' drivers/clk/qcom/Makefile 2>/dev/null || true
+          grep -q 'clk-uebug.o' drivers/clk/qcom/Makefile || echo 'obj-y += clk-uebug.o' >> drivers/clk/qcom/Makefile
+          grep -q 'clk-debug.o' drivers/clk/qcom/Makefile || echo 'obj-y += clk-debug.o' >> drivers/clk/qcom/Makefile
+          grep -q 'debugcc-kona.o' drivers/clk/qcom/Makefile || echo 'obj-y += debugcc-kona.o' >> drivers/clk/qcom/Makefile
 
-          # ===== trace 头空宏（含 lock_start） =====
+          # ===== trace 头空宏 =====
           cat > drivers/clk/qcom/trace.h <<'EOF'
           #ifndef __CLK_QCOM_TRACE_H
           #define __CLK_QCOM_TRACE_H
@@ -158,7 +160,7 @@ jobs:
           #endif
           EOF
 
-          # ===== trace 调用点全目录注释 =====
+          # ===== trace 调用点注释 =====
           QVR=drivers/hid/hid-qvr.c
           if [ -f "$QVR" ]; then
             sed -i 's/[[:space:]]*trace_qvr_recv_sensor(.*);/\/\/ &/' "$QVR"
@@ -169,6 +171,7 @@ jobs:
             sed -i 's/[[:space:]]*MDSS_PLL_ATRACE_BEGIN(.*);/\/\/ &/' "$f"
             sed -i 's/[[:space:]]*MDSS_PLL_ATRACE_END(.*);/\/\/ &/' "$f"
             sed -i 's/[[:space:]]*trace_mdss_pll_.*(.*);/\/\/ &/' "$f"
+            sed -i 's/[[:space:]]*trace_mddss_pll_.*(.*);/\/\/ &/' "$f"
           done
           grep -rl --include='*.c' --include='*.h' \
             -e 'trace_cam_icp_fw_dbg' -e 'trace_cam_context_state' -e 'trace_cam_req_mgr_pkt' \
@@ -233,6 +236,7 @@ jobs:
             echo "⚠️ 未找到 dtb，仅使用 Image.gz"
           fi
           echo "✅ build done"
+
 
       - name: Package AnyKernel3
         run: |
