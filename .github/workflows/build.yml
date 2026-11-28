@@ -69,11 +69,12 @@ jobs:
           scripts/config --disable CONFIG_CLK_DEBUG 2>/dev/null || true
           scripts/config --disable CONFIG_CLK_QCOM_UEBUG 2>/dev/null || true
           scripts/config --disable CONFIG_COMMON_CLK_QCOM_UEBUG 2>/dev/null || true
+          scripts/config --disable CONFIG_DEBUG_CC 2>/dev/null || true
+          scripts/config --disable CONFIG_CLK_QCOM_DEBUGCC 2>/dev/null || true
           scripts/config --disable CONFIG_IPA_V3 2>/dev/null || true
           scripts/config --disable CONFIG_IPA_DEBUGFS 2>/dev/null || true
-          # 不关 DEBUG_FS，避免 debugfs 符号 undefined reference
 
-          # ===== binder stub（整块配对注入，防清理误删） =====
+          # ===== binder stub（整块配对注入） =====
           BINDER=drivers/android/binder.c
           [ -f "$BINDER" ] || BINDER=techpack/android/binder.c
           if [ -f "$BINDER" ]; then
@@ -100,25 +101,36 @@ jobs:
             fi
           fi
 
-          # ===== audio（printf 格式符修复） =====
+          # ===== audio 格式符修复 =====
           sed -i 's/active_ch_cnt:%lu/active_ch_cnt:%lx/' techpack/audio/asoc/codecs/bolero/tx-macro.c 2>/dev/null || true
           sed -i 's/active_ch_cnt:%d/active_ch_cnt:%lx/' techpack/audio/asoc/codecs/bolero/tx-macro.c 2>/dev/null || true
           sed -i 's/with err %d/with err %ld/' drivers/char/adspprpc.c 2>/dev/null || true
           sed -i 's/int ret;/int ret = 0;/' techpack/audio/asoc/codecs/cs35141/vm_adsp.c 2>/dev/null || true
           sed -i 's/int port_idx;/int port_idx = 0;/' techpack/audio/dsp/q6adm.c 2>/dev/null || true
 
-          # ===== clk-debug + uebug 屏蔽 =====
+          # ===== clk-debug / uebug / debugcc 彻底清空+屏蔽 =====
           : > drivers/clk/qcom/clk-debug.c 2>/dev/null || true
-          sed -i 's/^obj-y.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
-          sed -i 's/^obj-m.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
-          sed -i 's/^obj-y.*clk-uebug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
-          sed -i 's/^obj-m.*clk-uebug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
-          UEBUG=drivers/clk/qcom/clk-uebug.c
-          if [ -f "$UEBUG" ]; then
-            grep -q 'clk_uebug_mux_ops' "$UEBUG" || echo 'const struct clk_ops clk_uebug_mux_ops = {};' >> "$UEBUG"
-          fi
+          : > drivers/clk/qcom/clk-uebug.c 2>/dev/null || true
+          : > drivers/clk/qcom/debugcc-kona.c 2>/dev/null || true
+          cat > drivers/clk/qcom/clk-uebug.c <<'EOF'
+          #include <linux/clk-provider.h>
+          const struct clk_ops clk_uebug_mux_ops = {};
+          int clk_uebug_measure_add(struct clk *clk, void *data) { return 0; }
+          EXPORT_SYMBOL(clk_uebug_measure_add);
+          EOF
+          cat > drivers/clk/qcom/clk-debug.c <<'EOF'
+          #include <linux/clk-provider.h>
+          #include <linux/io.h>
+          const struct clk_ops clk_debug_mux_ops = {};
+          void __iomem *map_debug_bases(struct platform_device *pdev, const char *name, int index) { return NULL; }
+          int clk_debug_measure_register(struct clk_hw *hw) { return 0; }
+          EXPORT_SYMBOL(clk_debug_mux_ops);
+          EXPORT_SYMBOL(map_debug_bases);
+          EXPORT_SYMBOL(clk_debug_measure_register);
+          EOF
+          sed -i -E 's/^[[:space:]]*(obj-y|obj-m)[[:space:]]*\+?=[^#]*(clk-debug|clk-uebug|debugcc-kona)[^#]*/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
 
-          # ===== trace 头给空宏，不直接清空 =====
+          # ===== trace 头空宏（含 lock_start） =====
           cat > drivers/clk/qcom/trace.h <<'EOF'
           #ifndef __CLK_QCOM_TRACE_H
           #define __CLK_QCOM_TRACE_H
@@ -134,6 +146,8 @@ jobs:
           #define trace_mddss_pll_enable(...) do { } while (0)
           #define trace_mddss_pll_disable(...) do { } while (0)
           #define trace_mddss_pll_set_rate(...) do { } while (0)
+          #define trace_mdss_pll_lock_start(...) do { } while (0)
+          #define trace_mdss_pll_lock_end(...) do { } while (0)
           #define MDSS_PLL_ATRACE_BEGIN(...) do { } while (0)
           #define MDSS_PLL_ATRACE_END(...) do { } while (0)
           #endif
@@ -155,12 +169,9 @@ jobs:
             sed -i 's/[[:space:]]*MDSS_PLL_ATRACE_BEGIN(.*);/\/\/ &/' "$f"
             sed -i 's/[[:space:]]*MDSS_PLL_ATRACE_END(.*);/\/\/ &/' "$f"
             sed -i 's/[[:space:]]*trace_mdss_pll_.*(.*);/\/\/ &/' "$f"
-            sed -i 's/[[:space:]]*trace_mddss_pll_.*(.*);/\/\/ &/' "$f"
           done
           grep -rl --include='*.c' --include='*.h' \
-            -e 'trace_cam_icp_fw_dbg' \
-            -e 'trace_cam_context_state' \
-            -e 'trace_cam_req_mgr_pkt' \
+            -e 'trace_cam_icp_fw_dbg' -e 'trace_cam_context_state' -e 'trace_cam_req_mgr_pkt' \
             techpack/camera 2>/dev/null | while read -r f; do
             sed -i 's/[[:space:]]*trace_cam_icp_fw_dbg(.*);/\/\/ &/' "$f"
             sed -i 's/[[:space:]]*trace_cam_context_state(.*);/\/\/ &/' "$f"
@@ -252,4 +263,3 @@ jobs:
           name: Kernel_lmi_SukiSU_4.19_MIUI_nospoof
           path: Kernel_lmi_SukiSU_4.19_MIUI_nospoof.zip
           if-no-files-found: error
-          
