@@ -71,11 +71,10 @@ jobs:
           scripts/config --disable CONFIG_IPA_DEBUGFS 2>/dev/null || true
           scripts/config --disable CONFIG_DEBUG_FS 2>/dev/null || true
 
-          # ===== binder stub（整块配对注入，防 #endif/#ifndef 错乱） =====
+          # ===== binder stub（整块配对注入） =====
           BINDER=drivers/android/binder.c
           [ -f "$BINDER" ] || BINDER=techpack/android/binder.c
           if [ -f "$BINDER" ]; then
-            # 清理历史所有残留
             sed -i '/__BINDER_STUB_FUNCS/d' "$BINDER"
             sed -i '/^static inline int is_critical_task/d' "$BINDER"
             sed -i '/^static inline void set_inherit_top_app/d' "$BINDER"
@@ -87,8 +86,6 @@ jobs:
             sed -i '/^#ifndef is_critical_task/,/^#endif/d' "$BINDER"
             sed -i '/^#ifndef set_inherit_top_app/,/^#endif/d' "$BINDER"
             sed -i '/^#ifndef restore_inherit_top_app/,/^#endif/d' "$BINDER"
-
-            # 整块注入（配对正确，不会乱序）
             if ! grep -q "is_critical_task" "$BINDER"; then
               {
                 echo '#ifndef __BINDER_STUB_FUNCS'
@@ -101,26 +98,43 @@ jobs:
                 echo ''
                 cat "$BINDER"
               } > "$BINDER.tmp" && mv "$BINDER.tmp" "$BINDER"
-              echo "✅ 已注入 binder stub（配对安全）"
+              echo "✅ 已注入 binder stub"
             fi
           fi
 
-          # ===== audio（printf 格式符修复） =====
+          # ===== audio 格式符修复 =====
           sed -i 's/active_ch_cnt:%lu/active_ch_cnt:%lx/' techpack/audio/asoc/codecs/bolero/tx-macro.c 2>/dev/null || true
           sed -i 's/active_ch_cnt:%d/active_ch_cnt:%lx/' techpack/audio/asoc/codecs/bolero/tx-macro.c 2>/dev/null || true
           sed -i 's/with err %d/with err %ld/' drivers/char/adspprpc.c 2>/dev/null || true
           sed -i 's/int ret;/int ret = 0;/' techpack/audio/asoc/codecs/cs35141/vm_adsp.c 2>/dev/null || true
           sed -i 's/int port_idx;/int port_idx = 0;/' techpack/audio/dsp/q6adm.c 2>/dev/null || true
 
-          # ===== clk-debug（空文件+注释Makefile） =====
+          # ===== clk-debug 屏蔽 =====
           : > drivers/clk/qcom/clk-debug.c 2>/dev/null || true
           sed -i 's/^obj-y.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
           sed -i 's/^obj-m.*clk-debug.o/#&/' drivers/clk/qcom/Makefile 2>/dev/null || true
 
-          # ===== 非相机 trace stub（仅限确定无 TRACE_EVENT 的） =====
-          echo '/* stub */' > drivers/clk/qcom/trace.h 2>/dev/null || true
-          echo '/* stub */' > techpack/display/pll/pll_trace.h 2>/dev/null || true
-          echo '/* stub */' > drivers/hid/hid-trace.h 2>/dev/null || true
+          # ===== trace 头兜底：不覆盖成空，给空宏 =====
+          cat > drivers/clk/qcom/trace.h <<'EOF'
+          #ifndef __CLK_QCOM_TRACE_H
+          #define __CLK_QCOM_TRACE_H
+          #endif
+          EOF
+          cat > techpack/display/pll/pll_trace.h <<'EOF'
+          #ifndef __PLL_TRACE_H
+          #define __PLL_TRACE_H
+          #define trace_mddss_pll_lock_start(...) do {} while (0)
+          #define trace_mddss_pll_lock_end(...) do {} while (0)
+          #define trace_mddss_pll_lock_stop(...) do {} while (0)
+          #define MDSS_PLL_ATRACE_BEGIN(x) do {} while (0)
+          #define MDSS_PLL_ATRACE_END(x) do {} while (0)
+          #endif
+          EOF
+          cat > drivers/hid/hid-trace.h <<'EOF'
+          #ifndef __HID_TRACE_H
+          #define __HID_TRACE_H
+          #endif
+          EOF
 
           # ===== cam_req_mgr_core.h 路径修复 =====
           CORE_H=techpack/camera/drivers/cam_req_mgr/cam_req_mgr_core.h
@@ -149,29 +163,47 @@ jobs:
           grep -q 'ccflags-y.*-I\$(srctree).*cam_cci' techpack/camera/drivers/cam_sensor_module/cam_cci/Makefile 2>/dev/null || \
             echo 'ccflags-y += -I$(srctree)/$(src)' >> techpack/camera/drivers/cam_sensor_module/cam_cci/Makefile 2>/dev/null || true
 
-          # ===== camera ICP：不注入宏，仅注释 trace 调用点 =====
+          # ===== camera trace 全量兜底：注释调用 + 注入空宏 =====
           CICP=techpack/camera/drivers/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c
           if [ -f "$CICP" ]; then
             grep -q '#include "cam_context.h"' "$CICP" || sed -i '1i #include "cam_context.h"' "$CICP"
             sed -i '/^#define trace_cam_icp_fw_dbg/d' "$CICP"
             sed -i '/^#define CAM_CTX_ACQUIRED/d' "$CICP"
-            sed -i 's/^[[:space:]]*trace_cam_icp_fw_dbg(.*);/\/\/ &/' "$CICP"
+            sed -i 's/[[:space:]]*trace_cam_icp_fw_dbg(.*);/\/\/ &/' "$CICP"
           fi
           sed -i 's/cam_context_buf_done_from_hw(ctx,/cam_context_buf_done_from_hw((struct cam_context *)ctx,/' \
             techpack/camera/drivers/cam_cust/cam_custom_context.c 2>/dev/null || true
 
-          # ===== cam_fd trace 调用点注释 =====
           FDCTX=techpack/camera/drivers/cam_fd/cam_fd_context.c
           if [ -f "$FDCTX" ]; then
-            sed -i 's/^[[:space:]]*trace_cam_context_state(.*);/\/\/ &/' "$FDCTX"
+            sed -i 's/[[:space:]]*trace_cam_context_state(.*);/\/\/ &/' "$FDCTX"
+          fi
+          for f in $(find techpack/camera -name '*.c' 2>/dev/null); do
+            sed -i 's/[[:space:]]*trace_cam_req_mgr_pkt(.*);/\/\/ &/' "$f"
+            sed -i 's/[[:space:]]*trace_cam_context_state(.*);/\/\/ &/' "$f"
+            sed -i 's/[[:space:]]*trace_cam_icp_fw_dbg(.*);/\/\/ &/' "$f"
+          done
+          CAMTR=techpack/camera/drivers/cam_utils/cam_trace.h
+          if [ -f "$CAMTR" ]; then
+            cat >> "$CAMTR" <<'EOF'
+          #ifndef trace_cam_req_mgr_pkt
+          #define trace_cam_req_mgr_pkt(...) do {} while (0)
+          #endif
+          #ifndef trace_cam_context_state
+          #define trace_cam_context_state(...) do {} while (0)
+          #endif
+          #ifndef trace_cam_icp_fw_dbg
+          #define trace_cam_icp_fw_dbg(...) do {} while (0)
+          #endif
+          EOF
           fi
 
-          # ===== display pll atrace/trace 调用注释（防链接 undefined） =====
+          # ===== display pll atrace/trace 调用注释 =====
           DSIPLL=techpack/display/pll/dsi_pll_10nm.c
           if [ -f "$DSIPLL" ]; then
-            sed -i 's/^[[:space:]]*MDSS_PLL_ATRACE_BEGIN(.*);/\/\/ &/' "$DSIPLL"
-            sed -i 's/^[[:space:]]*MDSS_PLL_ATRACE_END(.*);/\/\/ &/' "$DSIPLL"
-            sed -i 's/^[[:space:]]*trace_mddss_pll_.*(.*);/\/\/ &/' "$DSIPLL"
+            sed -i 's/[[:space:]]*MDSS_PLL_ATRACE_BEGIN(.*);/\/\/ &/' "$DSIPLL"
+            sed -i 's/[[:space:]]*MDSS_PLL_ATRACE_END(.*);/\/\/ &/' "$DSIPLL"
+            sed -i 's/[[:space:]]*trace_mddss_pll_.*(.*);/\/\/ &/' "$DSIPLL"
           fi
 
           # ===== IPA __bad_copy_to 兜底 =====
@@ -194,6 +226,7 @@ jobs:
             echo "⚠️ 未找到 dtb，仅使用 Image.gz"
           fi
           echo "✅ build done"
+
 
       - name: Package AnyKernel3
         run: |
